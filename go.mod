@@ -1,6 +1,6 @@
 module github.com/gemejime/rag-kb-catalog-service
 
-go 1.27.2
+go 1.26.0
 
 require (
 	github.com/jackc/pgx/v5 v5.12.0

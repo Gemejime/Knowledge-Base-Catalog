@@ -17,6 +17,8 @@ type KBMigration struct {
 	TargetSchema       VectorSchema   `json:"target_schema"`
 	State              LifecycleState `json:"state"`
 	DeltaLagRecords    uint64         `json:"delta_lag_records"`
+	BackfillCompleted  bool           `json:"backfill_completed"`
+	WriteFenceDrained  bool           `json:"write_fence_drained"`
 	TemporalWorkflowID string         `json:"temporal_workflow_id"`
 	AbortReason        string         `json:"abort_reason,omitempty"`
 	CreatedAt          time.Time      `json:"created_at"`
@@ -154,6 +156,10 @@ func (kb *KnowledgeBase) PromotePointer(
 	}
 	if err := ValidateTransition(kb.State, StatePromoted, authoritativeDeltaLag); err != nil {
 		return err
+	}
+	if migration != nil && (!migration.BackfillCompleted || !migration.WriteFenceDrained) {
+		return fmt.Errorf("%w: backfill completion (%t) and drained write fence (%t) are required before pointer promotion",
+			ErrDeltaLagNotZero, migration.BackfillCompleted, migration.WriteFenceDrained)
 	}
 	if kb.CandidateIndexPointer == "" || kb.CandidateSchema == nil {
 		return fmt.Errorf("%w: missing candidate blue index pointer or schema", ErrInvalidStateTransition)

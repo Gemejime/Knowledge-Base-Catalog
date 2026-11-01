@@ -21,10 +21,10 @@ CREATE TABLE IF NOT EXISTS knowledge_bases (
     taxonomy_tags            JSONB       NOT NULL DEFAULT '[]'::jsonb,
     created_at               TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at               TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    PRIMARY KEY (tenant_id, kb_id),
-    CONSTRAINT uq_kb_tenant_name UNIQUE (tenant_id, name)
+    PRIMARY KEY (tenant_id, kb_id)
 );
 
+CREATE UNIQUE INDEX IF NOT EXISTS uq_kb_tenant_name ON knowledge_bases (tenant_id, name) WHERE state != 'TOMBSTONED';
 CREATE INDEX IF NOT EXISTS idx_kb_tenant_taxonomy ON knowledge_bases USING GIN (taxonomy_tags);
 CREATE INDEX IF NOT EXISTS idx_kb_tenant_state ON knowledge_bases (tenant_id, state, kb_id);
 
@@ -39,6 +39,8 @@ CREATE TABLE IF NOT EXISTS kb_migrations (
     target_schema            JSONB       NOT NULL,
     state                    TEXT        NOT NULL CHECK (state IN ('REINDEXING', 'PROMOTED', 'ABORTED')),
     delta_lag_records        BIGINT      NOT NULL DEFAULT 0,
+    backfill_completed       BOOLEAN     NOT NULL DEFAULT FALSE,
+    write_fence_drained      BOOLEAN     NOT NULL DEFAULT FALSE,
     temporal_workflow_id     TEXT        NOT NULL DEFAULT '',
     abort_reason             TEXT        NOT NULL DEFAULT '',
     created_at               TIMESTAMPTZ NOT NULL DEFAULT NOW(),

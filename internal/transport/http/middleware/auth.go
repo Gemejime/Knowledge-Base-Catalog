@@ -9,6 +9,7 @@ import (
 	"errors"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/gemejime/rag-kb-catalog-service/internal/domain/entity"
 	"github.com/gemejime/rag-kb-catalog-service/internal/domain/policy"
@@ -91,46 +92,20 @@ func AuthMiddleware(jwtSecret string, writeError func(w http.ResponseWriter, sta
 // ExtractHTTPIdentity parses the caller identity from a Bearer JWT token or Edge-Gateway propagated headers.
 func ExtractHTTPIdentity(r *http.Request, jwtSecret, reqID string) (policy.CallerIdentity, error) {
 	authHeader := strings.TrimSpace(r.Header.Get("Authorization"))
-	if authHeader != "" {
-		parts := strings.SplitN(authHeader, " ", 2)
-		if len(parts) != 2 || !strings.EqualFold(parts[0], "Bearer") {
-			return policy.CallerIdentity{}, ErrUnauthenticated
-		}
-		rawToken := strings.TrimSpace(parts[1])
-		caller, err := ParseAndVerifyJWT(rawToken, jwtSecret, reqID)
-		if err != nil {
-			return policy.CallerIdentity{}, err
-		}
-		return caller, nil
-	}
-
-	// Fallback to Edge-Gateway pre-verified headers when propagated inside the service mesh.
-	tenantID := strings.TrimSpace(r.Header.Get("X-Tenant-ID"))
-	userID := strings.TrimSpace(r.Header.Get("X-User-ID"))
-	if userID == "" {
-		userID = strings.TrimSpace(r.Header.Get("X-Subject"))
-	}
-	rolesHeader := strings.TrimSpace(r.Header.Get("X-Roles"))
-	if tenantID == "" || userID == "" {
+	if authHeader == "" {
 		return policy.CallerIdentity{}, ErrUnauthenticated
 	}
 
-	var roles []policy.Role
-	if rolesHeader != "" {
-		for _, tok := range strings.Split(rolesHeader, ",") {
-			trimmed := strings.TrimSpace(tok)
-			if trimmed != "" {
-				roles = append(roles, policy.Role(trimmed))
-			}
-		}
+	parts := strings.SplitN(authHeader, " ", 2)
+	if len(parts) != 2 || !strings.EqualFold(parts[0], "Bearer") {
+		return policy.CallerIdentity{}, ErrUnauthenticated
 	}
-
-	return policy.CallerIdentity{
-		TenantID:  tenantID,
-		UserID:    userID,
-		Roles:     roles,
-		RequestID: reqID,
-	}, nil
+	rawToken := strings.TrimSpace(parts[1])
+	caller, err := ParseAndVerifyJWT(rawToken, jwtSecret, reqID)
+	if err != nil {
+		return policy.CallerIdentity{}, err
+	}
+	return caller, nil
 }
 
 type jwtClaims struct {
@@ -140,25 +115,31 @@ type jwtClaims struct {
 	UserID   string   `json:"user_id"`
 	Roles    []string `json:"roles"`
 	Role     string   `json:"role"`
+	Exp      *int64   `json:"exp,omitempty"`
+	Nbf      *int64   `json:"nbf,omitempty"`
 }
 
-// ParseAndVerifyJWT decodes a JWT token, verifies its HMAC-SHA256 signature when jwtSecret is non-empty,
+const clockSkewLeeway = 60 // 60 seconds leeway for clock skew
+
+// ParseAndVerifyJWT decodes a JWT token, verifies its HMAC-SHA256 signature, validates exp and nbf time claims,
 // and maps incoming "sub"/"subject" to canonical "user_id".
 func ParseAndVerifyJWT(tokenStr, jwtSecret, reqID string) (policy.CallerIdentity, error) {
+	if strings.TrimSpace(jwtSecret) == "" {
+		return policy.CallerIdentity{}, ErrUnauthenticated
+	}
+
 	segments := strings.Split(tokenStr, ".")
 	if len(segments) != 3 {
 		return policy.CallerIdentity{}, ErrUnauthenticated
 	}
 
-	if jwtSecret != "" {
-		signingInput := segments[0] + "." + segments[1]
-		mac := hmac.New(sha256.New, []byte(jwtSecret))
-		_, _ = mac.Write([]byte(signingInput))
-		expectedSig := mac.Sum(nil)
-		actualSig, err := base64.RawURLEncoding.DecodeString(segments[2])
-		if err != nil || !hmac.Equal(actualSig, expectedSig) {
-			return policy.CallerIdentity{}, ErrUnauthenticated
-		}
+	signingInput := segments[0] + "." + segments[1]
+	mac := hmac.New(sha256.New, []byte(jwtSecret))
+	_, _ = mac.Write([]byte(signingInput))
+	expectedSig := mac.Sum(nil)
+	actualSig, err := base64.RawURLEncoding.DecodeString(segments[2])
+	if err != nil || !hmac.Equal(actualSig, expectedSig) {
+		return policy.CallerIdentity{}, ErrUnauthenticated
 	}
 
 	payloadBytes, err := base64.RawURLEncoding.DecodeString(segments[1])
@@ -168,6 +149,17 @@ func ParseAndVerifyJWT(tokenStr, jwtSecret, reqID string) (policy.CallerIdentity
 
 	var claims jwtClaims
 	if err := json.Unmarshal(payloadBytes, &claims); err != nil {
+		return policy.CallerIdentity{}, ErrUnauthenticated
+	}
+
+	nowSec := time.Now().UTC().Unix()
+	if claims.Exp == nil {
+		return policy.CallerIdentity{}, ErrUnauthenticated
+	}
+	if nowSec > *claims.Exp+clockSkewLeeway {
+		return policy.CallerIdentity{}, ErrUnauthenticated
+	}
+	if claims.Nbf != nil && nowSec < *claims.Nbf-clockSkewLeeway {
 		return policy.CallerIdentity{}, ErrUnauthenticated
 	}
 

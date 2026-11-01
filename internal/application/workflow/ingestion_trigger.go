@@ -2,10 +2,14 @@ package workflow
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"github.com/gemejime/rag-kb-catalog-service/internal/domain/entity"
 )
+
+// ErrIngestionSchedulerNotConfigured indicates that no Temporal DAG scheduler is configured for backfill orchestration.
+var ErrIngestionSchedulerNotConfigured = errors.New("ingestion backfill DAG scheduler is not configured")
 
 // BackfillTriggerRequest encapsulates the parameters passed to rag-ingestion-coordinator via Temporal.
 type BackfillTriggerRequest struct {
@@ -23,16 +27,29 @@ type IngestionTrigger interface {
 	TriggerBackfillDAG(ctx context.Context, req BackfillTriggerRequest) (workflowRunID string, err error)
 }
 
-// NoopIngestionTrigger provides a deterministic Phase 1 adapter prior to Phase 3's Temporal SDK integration.
+// NoopIngestionTrigger provides a fail-closed adapter when no external Temporal DAG scheduler is configured.
 type NoopIngestionTrigger struct{}
 
-// NewNoopIngestionTrigger creates a safe Phase 1 no-op workflow trigger adapter.
+// NewNoopIngestionTrigger creates an unconfigured workflow trigger adapter that fails closed on TriggerBackfillDAG.
 func NewNoopIngestionTrigger() *NoopIngestionTrigger {
 	return &NoopIngestionTrigger{}
 }
 
+// TriggerBackfillDAG returns an error when no DAG scheduler is configured so TriggerReindexing does not report success for an unscheduled backfill.
+func (n *NoopIngestionTrigger) TriggerBackfillDAG(_ context.Context, _ BackfillTriggerRequest) (string, error) {
+	return "", ErrIngestionSchedulerNotConfigured
+}
+
+// DeterministicIngestionTrigger provides a deterministic in-memory workflow trigger adapter for standalone/test environments.
+type DeterministicIngestionTrigger struct{}
+
+// NewDeterministicIngestionTrigger creates a deterministic workflow trigger adapter.
+func NewDeterministicIngestionTrigger() *DeterministicIngestionTrigger {
+	return &DeterministicIngestionTrigger{}
+}
+
 // TriggerBackfillDAG returns a deterministic workflow run identifier without external network I/O.
-func (n *NoopIngestionTrigger) TriggerBackfillDAG(_ context.Context, req BackfillTriggerRequest) (string, error) {
+func (d *DeterministicIngestionTrigger) TriggerBackfillDAG(_ context.Context, req BackfillTriggerRequest) (string, error) {
 	if req.WorkflowID != "" {
 		return req.WorkflowID, nil
 	}

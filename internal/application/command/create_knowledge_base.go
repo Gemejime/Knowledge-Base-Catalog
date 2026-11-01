@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -103,6 +104,22 @@ func (c *CreateKnowledgeBaseCommand) Execute(ctx context.Context, in dto.CreateK
 	}
 
 	if err := c.repo.Create(ctx, kb, outboxEvt, idempRecord); err != nil {
+		if idempKey != "" && errors.Is(err, entity.ErrIdempotencyKeyConflict) {
+			existing, getErr := c.repo.GetIdempotencyRecord(ctx, in.Caller.TenantID, idempKey, time.Now().UTC())
+			if getErr != nil {
+				return nil, getErr
+			}
+			if existing != nil {
+				if existing.RequestHash != reqHash {
+					return nil, fmt.Errorf("%w: idempotency key %q reused with different request parameters", entity.ErrIdempotencyKeyConflict, idempKey)
+				}
+				var cachedResp dto.KBResponse
+				if err := json.Unmarshal(existing.ResponsePayload, &cachedResp); err != nil {
+					return nil, fmt.Errorf("failed to decode cached idempotency response: %w", err)
+				}
+				return &cachedResp, nil
+			}
+		}
 		return nil, err
 	}
 

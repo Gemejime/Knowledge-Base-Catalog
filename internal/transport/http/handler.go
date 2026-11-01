@@ -71,17 +71,21 @@ func (h *Handler) Healthz(w http.ResponseWriter, _ *http.Request) {
 // Ready handles GET /ready readiness probe verifying PostgreSQL pool and Redis Cluster connectivity.
 func (h *Handler) Ready(w http.ResponseWriter, r *http.Request) {
 	reqID := middleware.RequestIDFromContext(r.Context())
+	redisStatus := "connected"
 	if h.readinessCheck != nil {
 		pgOK, redisOK, err := h.readinessCheck(r.Context())
-		if err != nil || !pgOK || !redisOK {
+		if err != nil || !pgOK {
 			WriteError(w, http.StatusServiceUnavailable, "SERVICE_UNAVAILABLE", "upstream dependency unreachable", reqID)
 			return
+		}
+		if !redisOK {
+			redisStatus = "disabled"
 		}
 	}
 	WriteJSON(w, http.StatusOK, map[string]string{
 		"status":        "ready",
 		"postgres":      "connected",
-		"redis_cluster": "connected",
+		"redis_cluster": redisStatus,
 	})
 }
 
@@ -106,6 +110,14 @@ func (h *Handler) ServeReDocUI(w http.ResponseWriter, _ *http.Request) {
 	_, _ = w.Write([]byte(redocUIHTML))
 }
 
+const maxRequestBodyBytes = 1 << 20 // 1 MiB upper bound
+
+func decodeJSONBody(w http.ResponseWriter, r *http.Request, dst any) error {
+	r.Body = http.MaxBytesReader(w, r.Body, maxRequestBodyBytes)
+	dec := json.NewDecoder(r.Body)
+	return dec.Decode(dst)
+}
+
 // CreateKnowledgeBase handles POST /v1/knowledge-bases.
 func (h *Handler) CreateKnowledgeBase(w http.ResponseWriter, r *http.Request) {
 	reqID := middleware.RequestIDFromContext(r.Context())
@@ -116,7 +128,7 @@ func (h *Handler) CreateKnowledgeBase(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var in dto.CreateKBInput
-	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+	if err := decodeJSONBody(w, r, &in); err != nil {
 		WriteError(w, http.StatusBadRequest, "INVALID_ARGUMENT", "malformed JSON request body", reqID)
 		return
 	}
@@ -214,7 +226,7 @@ func (h *Handler) UpdateKnowledgeBase(w http.ResponseWriter, r *http.Request, kb
 	}
 
 	var rawMap map[string]json.RawMessage
-	if err := json.NewDecoder(r.Body).Decode(&rawMap); err != nil {
+	if err := decodeJSONBody(w, r, &rawMap); err != nil {
 		WriteError(w, http.StatusBadRequest, "INVALID_ARGUMENT", "malformed JSON request body", reqID)
 		return
 	}
@@ -236,17 +248,27 @@ func (h *Handler) UpdateKnowledgeBase(w http.ResponseWriter, r *http.Request, kb
 		in.TaxonomyTagsPresent = true
 	}
 
-	// F-06: Catch attempts to mutate active_schema or vector_schema directly in the REST PATCH body.
+	// Catch attempts to mutate active_schema or vector_schema directly in the REST PATCH body.
+	// Check active_schema and vector_schema independently so one does not hide the other.
 	if in.AttemptedSchemaMutation == nil {
 		if rawSchema, ok := rawMap["active_schema"]; ok && len(rawSchema) > 0 && string(rawSchema) != "null" {
 			var s entity.VectorSchema
 			if err := json.Unmarshal(rawSchema, &s); err == nil {
 				in.AttemptedSchemaMutation = &s
+			} else {
+				// Non-unmarshalable value still indicates a mutation attempt on active_schema
+				in.AttemptedSchemaMutation = &entity.VectorSchema{EmbeddingModel: "__invalid_schema_mutation__"}
 			}
-		} else if rawVecSchema, ok := rawMap["vector_schema"]; ok && len(rawVecSchema) > 0 && string(rawVecSchema) != "null" {
+		}
+	}
+	if in.AttemptedSchemaMutation == nil {
+		if rawVecSchema, ok := rawMap["vector_schema"]; ok && len(rawVecSchema) > 0 && string(rawVecSchema) != "null" {
 			var s entity.VectorSchema
 			if err := json.Unmarshal(rawVecSchema, &s); err == nil {
 				in.AttemptedSchemaMutation = &s
+			} else {
+				// Non-unmarshalable value still indicates a mutation attempt on vector_schema
+				in.AttemptedSchemaMutation = &entity.VectorSchema{EmbeddingModel: "__invalid_schema_mutation__"}
 			}
 		}
 	}
@@ -300,7 +322,7 @@ func (h *Handler) TriggerReindexing(w http.ResponseWriter, r *http.Request, kbID
 	}
 
 	var in dto.TriggerReindexingInput
-	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+	if err := decodeJSONBody(w, r, &in); err != nil {
 		WriteError(w, http.StatusBadRequest, "INVALID_ARGUMENT", "malformed JSON request body", reqID)
 		return
 	}
@@ -325,7 +347,7 @@ func (h *Handler) PromotePointer(w http.ResponseWriter, r *http.Request, kbID st
 	}
 
 	var in dto.PromotePointerInput
-	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+	if err := decodeJSONBody(w, r, &in); err != nil {
 		WriteError(w, http.StatusBadRequest, "INVALID_ARGUMENT", "malformed JSON request body", reqID)
 		return
 	}
@@ -350,7 +372,7 @@ func (h *Handler) AbortReindexing(w http.ResponseWriter, r *http.Request, kbID s
 	}
 
 	var in dto.AbortReindexingInput
-	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+	if err := decodeJSONBody(w, r, &in); err != nil {
 		WriteError(w, http.StatusBadRequest, "INVALID_ARGUMENT", "malformed JSON request body", reqID)
 		return
 	}

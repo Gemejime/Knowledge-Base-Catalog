@@ -61,7 +61,7 @@ type CatalogRepository interface {
 	AbortReindexing(ctx context.Context, tenantID, kbID string, expectedVersion uint64, reason string, now time.Time) (*entity.KnowledgeBase, error)
 
 	// SoftDelete atomically transitions the KnowledgeBase to TOMBSTONED under OCC and records KBDeleted in outbox_events.
-	SoftDelete(ctx context.Context, tenantID, kbID string, expectedVersion uint64, now time.Time) error
+	SoftDelete(ctx context.Context, tenantID, kbID string, expectedVersion uint64, now time.Time) (*entity.KnowledgeBase, error)
 }
 
 // VersionedCache defines the optional direct Redis 7.2 Cluster read/write cache port (ADR-003).

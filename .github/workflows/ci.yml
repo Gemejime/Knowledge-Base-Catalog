@@ -138,6 +138,8 @@ jobs:
       - name: Run Go Vulnerability Check (govulncheck)
         if: hashFiles('go.mod') != ''
         uses: golang/govulncheck-action@v1
+        env:
+          GOTOOLCHAIN: auto
         with:
           go-version-input: ${{ env.GO_VERSION }}
 
@@ -210,9 +212,11 @@ jobs:
 
       - name: Enforce Continuous Doc API Synchronization on Code Modifications
         if: github.event_name == 'pull_request'
+        env:
+          BASE_REF: ${{ github.base_ref }}
         run: |
-          git fetch origin "${{ github.base_ref }}"
-          MERGE_BASE=$(git merge-base "origin/${{ github.base_ref }}" HEAD)
+          git fetch origin "$BASE_REF"
+          MERGE_BASE=$(git merge-base "origin/$BASE_REF" HEAD)
           CHANGED_CODE=$(git diff --name-only "$MERGE_BASE...HEAD" -- 'cmd/**' 'internal/**' 'api/proto/**')
           CHANGED_DOC_API=$(git diff --name-only "$MERGE_BASE...HEAD" -- '.ai/doc-api.md')
           CHANGED_OPENAPI=$(git diff --name-only "$MERGE_BASE...HEAD" -- 'api/openapi/openapi.yaml')

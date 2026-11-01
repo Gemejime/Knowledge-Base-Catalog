@@ -8,5 +8,6 @@ DROP INDEX IF EXISTS idx_kb_migrations_active;
 DROP TABLE IF EXISTS kb_migrations;
 DROP INDEX IF EXISTS idx_kb_tenant_state;
 DROP INDEX IF EXISTS idx_kb_tenant_taxonomy;
+DROP INDEX IF EXISTS uq_kb_tenant_name;
 DROP TABLE IF EXISTS knowledge_bases;
 

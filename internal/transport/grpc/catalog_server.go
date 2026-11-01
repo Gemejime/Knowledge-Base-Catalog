@@ -254,7 +254,7 @@ func (s *CatalogServer) PromoteIndexPointer(ctx context.Context, req *catalogv1.
 }
 
 // AbortReindexing implements catalogv1.CatalogServiceServer.
-func (s *CatalogServer) AbortReindexing(ctx context.Context, req *catalogv1.AbortReindexingRequest) (*emptypb.Empty, error) {
+func (s *CatalogServer) AbortReindexing(ctx context.Context, req *catalogv1.AbortReindexingRequest) (*catalogv1.KBResponse, error) {
 	caller, ok := middleware.CallerFromContext(ctx)
 	if !ok {
 		return nil, status.Error(codes.Unauthenticated, "missing verified caller context")
@@ -263,7 +263,7 @@ func (s *CatalogServer) AbortReindexing(ctx context.Context, req *catalogv1.Abor
 		return nil, status.Error(codes.InvalidArgument, "request is required")
 	}
 
-	_, err := s.abortCmd.Execute(ctx, dto.AbortReindexingInput{
+	resp, err := s.abortCmd.Execute(ctx, dto.AbortReindexingInput{
 		Caller:          caller,
 		KBID:            req.KbId,
 		ExpectedVersion: req.ExpectedVersion,
@@ -272,7 +272,7 @@ func (s *CatalogServer) AbortReindexing(ctx context.Context, req *catalogv1.Abor
 	if err != nil {
 		return nil, interceptors.MapDomainErrorToGRPC(err)
 	}
-	return &emptypb.Empty{}, nil
+	return &catalogv1.KBResponse{KnowledgeBase: toProtoKB(resp.KnowledgeBase)}, nil
 }
 
 func fromProtoVectorSchema(vs *catalogv1.VectorSchema) entity.VectorSchema {

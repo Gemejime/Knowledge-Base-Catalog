@@ -127,7 +127,7 @@ type KnowledgeBase struct {
 	KBID                  string           `json:"kb_id"`
 	Name                  string           `json:"name"`
 	Description           string           `json:"description"`
-	Version               uint64           `json:"version"`
+	Version               uint64           `json:"version,string"`
 	State                 LifecycleState   `json:"state"`
 	RoutingPolicy         RoutingPolicy    `json:"routing_policy"`
 	ActiveIndexPointer    string           `json:"active_index_pointer"`

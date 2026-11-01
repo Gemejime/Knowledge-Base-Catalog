@@ -1,6 +1,7 @@
 package middleware
 
 import (
+	"context"
 	"log/slog"
 	"net/http"
 	"strconv"
@@ -17,6 +18,28 @@ type statusRecorder struct {
 func (sr *statusRecorder) WriteHeader(code int) {
 	sr.statusCode = code
 	sr.ResponseWriter.WriteHeader(code)
+}
+
+// RoutePatternContextKey is the context key for custom derived route labels.
+type routePatternContextKey struct{}
+
+// RoutePatternKey is the key instance used to store route patterns.
+var RoutePatternKey = routePatternContextKey{}
+
+// WithRoutePattern stores a bounded route pattern in the request context.
+func WithRoutePattern(r *http.Request, pattern string) *http.Request {
+	return r.WithContext(context.WithValue(r.Context(), RoutePatternKey, pattern))
+}
+
+// GetRoutePattern retrieves the route pattern from the request.
+func GetRoutePattern(r *http.Request) string {
+	if v, ok := r.Context().Value(RoutePatternKey).(string); ok && v != "" {
+		return v
+	}
+	if r.Pattern != "" {
+		return r.Pattern
+	}
+	return "unmatched"
 }
 
 // LoggingAndMetricsMiddleware records Prometheus request counters/histograms, recovers panics,
@@ -48,7 +71,9 @@ func LoggingAndMetricsMiddleware(logger *slog.Logger, metrics *observability.Met
 				if tenantID == "" {
 					tenantID = "anonymous"
 				}
-				methodLabel := r.Method + " " + r.URL.Path
+
+				pattern := GetRoutePattern(r)
+				methodLabel := r.Method + " " + pattern
 				statusStr := strconv.Itoa(rec.statusCode)
 
 				if metrics != nil {
@@ -61,6 +86,7 @@ func LoggingAndMetricsMiddleware(logger *slog.Logger, metrics *observability.Met
 						slog.String("request_id", RequestIDFromContext(r.Context())),
 						slog.String("tenant_id", tenantID),
 						slog.String("method", methodLabel),
+						slog.String("path", r.URL.Path),
 						slog.Int("status_code", rec.statusCode),
 						slog.Float64("duration_ms", float64(duration.Microseconds())/1000.0),
 					)

@@ -62,20 +62,6 @@ func (c *TriggerReindexingCommand) Execute(ctx context.Context, in dto.TriggerRe
 		return nil, err
 	}
 
-	workflowID, err := c.trigger.TriggerBackfillDAG(ctx, workflow.BackfillTriggerRequest{
-		TenantID:           kb.TenantID,
-		KBID:               kb.KBID,
-		MigrationID:        migration.MigrationID,
-		WorkflowID:         migration.TemporalWorkflowID,
-		SourceGreenPointer: migration.SourceGreenPointer,
-		TargetBluePointer:  migration.TargetBluePointer,
-		TargetSchema:       migration.TargetSchema,
-	})
-	if err != nil {
-		return nil, fmt.Errorf("failed to trigger ingestion backfill workflow: %w", err)
-	}
-	migration.TemporalWorkflowID = workflowID
-
 	outboxEvt, err := event.NewOutboxEvent(kb, event.EventReindexInitiated, map[string]any{
 		"migration_id":         migration.MigrationID,
 		"source_green_pointer": migration.SourceGreenPointer,
@@ -94,6 +80,22 @@ func (c *TriggerReindexingCommand) Execute(ctx context.Context, in dto.TriggerRe
 		_ = c.cache.PutVersion(ctx, kb)
 	}
 
+	if err := c.dispatchBackfillWithRetry(ctx, workflow.BackfillTriggerRequest{
+		TenantID:           kb.TenantID,
+		KBID:               kb.KBID,
+		MigrationID:        migration.MigrationID,
+		WorkflowID:         migration.TemporalWorkflowID,
+		SourceGreenPointer: migration.SourceGreenPointer,
+		TargetBluePointer:  migration.TargetBluePointer,
+		TargetSchema:       migration.TargetSchema,
+	}); err != nil {
+		abortNow := time.Now().UTC()
+		if abortedKB, abortErr := c.repo.AbortReindexing(ctx, kb.TenantID, kb.KBID, kb.Version, "backfill workflow trigger failed", abortNow); abortErr == nil && c.cache != nil && abortedKB != nil {
+			_ = c.cache.PutVersion(ctx, abortedKB)
+		}
+		return nil, fmt.Errorf("failed to trigger ingestion backfill workflow: %w", err)
+	}
+
 	return &dto.MigrationResponse{
 		TenantID:              kb.TenantID,
 		KBID:                  kb.KBID,
@@ -103,4 +105,19 @@ func (c *TriggerReindexingCommand) Execute(ctx context.Context, in dto.TriggerRe
 		CandidateIndexPointer: kb.CandidateIndexPointer,
 		Version:               kb.Version,
 	}, nil
+}
+
+func (c *TriggerReindexingCommand) dispatchBackfillWithRetry(ctx context.Context, req workflow.BackfillTriggerRequest) error {
+	var lastErr error
+	for attempt := 0; attempt < 3; attempt++ {
+		if _, err := c.trigger.TriggerBackfillDAG(ctx, req); err == nil {
+			return nil
+		} else {
+			lastErr = err
+		}
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+	}
+	return lastErr
 }

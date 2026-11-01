@@ -92,6 +92,39 @@ func (r *CatalogRepo) Create(ctx context.Context, kb *entity.KnowledgeBase, outb
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
+	if idempotency != nil {
+		const insertIdemp = `
+			INSERT INTO idempotency_keys (
+				tenant_id, idempotency_key, operation, request_hash, response_payload, status_code, created_at, expires_at
+			) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+			ON CONFLICT (tenant_id, idempotency_key) DO UPDATE
+			SET request_hash = EXCLUDED.request_hash,
+			    response_payload = EXCLUDED.response_payload,
+			    status_code = EXCLUDED.status_code,
+			    created_at = EXCLUDED.created_at,
+			    expires_at = EXCLUDED.expires_at
+			WHERE idempotency_keys.expires_at <= $7
+		`
+		tag, err := tx.Exec(
+			ctx,
+			insertIdemp,
+			t,
+			idempotency.IdempotencyKey,
+			idempotency.Operation,
+			idempotency.RequestHash,
+			idempotency.ResponsePayload,
+			idempotency.StatusCode,
+			idempotency.CreatedAt,
+			idempotency.ExpiresAt,
+		)
+		if err != nil {
+			return fmt.Errorf("failed to insert idempotency record: %w", err)
+		}
+		if tag.RowsAffected() == 0 {
+			return entity.ErrIdempotencyKeyConflict
+		}
+	}
+
 	activeSchemaJSON, err := json.Marshal(kb.ActiveSchema)
 	if err != nil {
 		return err
@@ -140,35 +173,6 @@ func (r *CatalogRepo) Create(ctx context.Context, kb *entity.KnowledgeBase, outb
 
 	if err := r.outbox.InsertTx(ctx, tx, outbox); err != nil {
 		return err
-	}
-
-	if idempotency != nil {
-		const insertIdemp = `
-			INSERT INTO idempotency_keys (
-				tenant_id, idempotency_key, operation, request_hash, response_payload, status_code, created_at, expires_at
-			) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-			ON CONFLICT (tenant_id, idempotency_key) DO UPDATE
-			SET request_hash = EXCLUDED.request_hash,
-			    response_payload = EXCLUDED.response_payload,
-			    status_code = EXCLUDED.status_code,
-			    created_at = EXCLUDED.created_at,
-			    expires_at = EXCLUDED.expires_at
-		`
-		_, err = tx.Exec(
-			ctx,
-			insertIdemp,
-			t,
-			idempotency.IdempotencyKey,
-			idempotency.Operation,
-			idempotency.RequestHash,
-			idempotency.ResponsePayload,
-			idempotency.StatusCode,
-			idempotency.CreatedAt,
-			idempotency.ExpiresAt,
-		)
-		if err != nil {
-			return fmt.Errorf("failed to insert idempotency record: %w", err)
-		}
 	}
 
 	return tx.Commit(ctx)
@@ -413,8 +417,8 @@ type rowQuerier interface {
 func (r *CatalogRepo) getActiveMigrationQuery(ctx context.Context, q rowQuerier, tenantID, kbID string) (*entity.KBMigration, error) {
 	const sqlStr = `
 		SELECT tenant_id, migration_id, kb_id, source_green_pointer, target_blue_pointer,
-		       source_schema, target_schema, state, delta_lag_records, temporal_workflow_id,
-		       abort_reason, created_at, updated_at
+		       source_schema, target_schema, state, delta_lag_records, backfill_completed, write_fence_drained,
+		       temporal_workflow_id, abort_reason, created_at, updated_at
 		FROM kb_migrations
 		WHERE tenant_id = $1 AND kb_id = $2 AND state = 'REINDEXING'
 	`
@@ -432,6 +436,8 @@ func (r *CatalogRepo) getActiveMigrationQuery(ctx context.Context, q rowQuerier,
 		&tgtBytes,
 		&stateStr,
 		&lag,
+		&m.BackfillCompleted,
+		&m.WriteFenceDrained,
 		&m.TemporalWorkflowID,
 		&m.AbortReason,
 		&m.CreatedAt,
@@ -529,7 +535,7 @@ func (r *CatalogRepo) PromotePointer(ctx context.Context, tenantID, kbID string,
 		UPDATE kb_migrations
 		SET state = 'PROMOTED',
 		    updated_at = $3
-		WHERE tenant_id = $1 AND migration_id = $2 AND state = 'REINDEXING' AND delta_lag_records = 0
+		WHERE tenant_id = $1 AND migration_id = $2 AND state = 'REINDEXING' AND delta_lag_records = 0 AND backfill_completed = TRUE AND write_fence_drained = TRUE
 	`
 	tag, err := tx.Exec(ctx, updateMig, t, migration.MigrationID, now)
 	if err != nil {
@@ -657,30 +663,34 @@ func (r *CatalogRepo) AbortReindexing(ctx context.Context, tenantID, kbID string
 }
 
 // SoftDelete atomically transitions the KnowledgeBase to TOMBSTONED under OCC and records KBDeleted in outbox_events.
-func (r *CatalogRepo) SoftDelete(ctx context.Context, tenantID, kbID string, expectedVersion uint64, now time.Time) error {
+func (r *CatalogRepo) SoftDelete(ctx context.Context, tenantID, kbID string, expectedVersion uint64, now time.Time) (*entity.KnowledgeBase, error) {
 	t, err := requireTenant(tenantID)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	tx, err := r.pool.Begin(ctx)
 	if err != nil {
-		return fmt.Errorf("failed to begin transaction: %w", err)
+		return nil, fmt.Errorf("failed to begin transaction: %w", err)
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
 	kb, err := r.getByIDTx(ctx, tx, t, kbID)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	if kb.Version != expectedVersion {
 		if r.metrics != nil {
 			r.metrics.RecordOptimisticConflict(t, "DeleteKnowledgeBase")
 		}
-		return fmt.Errorf("%w: expected version %d, actual %d", entity.ErrVersionConflict, expectedVersion, kb.Version)
+		return nil, fmt.Errorf("%w: expected version %d, actual %d", entity.ErrVersionConflict, expectedVersion, kb.Version)
 	}
+
+	wasReindexing := kb.State == entity.StateReindexing
+	capturedCandidate := kb.CandidateIndexPointer
+
 	if err := kb.MarkTombstoned(expectedVersion, now); err != nil {
-		return err
+		return nil, err
 	}
 
 	const deleteSQL = `
@@ -700,21 +710,50 @@ func (r *CatalogRepo) SoftDelete(ctx context.Context, tenantID, kbID string, exp
 		if r.metrics != nil {
 			r.metrics.RecordOptimisticConflict(t, "DeleteKnowledgeBase")
 		}
-		return entity.ErrVersionConflict
+		return nil, entity.ErrVersionConflict
 	}
 	if err != nil {
-		return fmt.Errorf("failed to tombstone knowledge base: %w", err)
+		return nil, fmt.Errorf("failed to tombstone knowledge base: %w", err)
 	}
 
-	outboxEvt, err := event.NewOutboxEvent(kb, event.EventKBDeleted, nil, now)
+	if wasReindexing {
+		const abortMigSQL = `
+			UPDATE kb_migrations
+			SET state = 'ABORTED',
+			    abort_reason = 'knowledge base deleted',
+			    updated_at = $3
+			WHERE tenant_id = $1 AND kb_id = $2 AND state = 'REINDEXING'
+		`
+		if _, err := tx.Exec(ctx, abortMigSQL, t, kbID, now); err != nil {
+			return nil, fmt.Errorf("failed to abort active migration on delete: %w", err)
+		}
+	}
+
+	var extraPayload map[string]any
+	if capturedCandidate != "" {
+		extraPayload = map[string]any{
+			"candidate_index_pointer": capturedCandidate,
+		}
+	}
+
+	outboxEvt, err := event.NewOutboxEvent(kb, event.EventKBDeleted, extraPayload, now)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	if err := r.outbox.InsertTx(ctx, tx, outboxEvt); err != nil {
-		return err
+		return nil, err
 	}
 
-	return tx.Commit(ctx)
+	if err := tx.Commit(ctx); err != nil {
+		return nil, err
+	}
+
+	if wasReindexing && r.metrics != nil {
+		r.metrics.ActiveMigrations.WithLabelValues(t).Dec()
+		r.metrics.MigrationDeltaLag.WithLabelValues(t, kbID).Set(0)
+	}
+
+	return kb, nil
 }
 
 func (r *CatalogRepo) getByIDTx(ctx context.Context, tx pgx.Tx, tenantID, kbID string) (*entity.KnowledgeBase, error) {
@@ -734,7 +773,7 @@ func (r *CatalogRepo) getByIDTx(ctx context.Context, tx pgx.Tx, tenantID, kbID s
 }
 
 func (r *CatalogRepo) disambiguateMissingOrConflictTx(ctx context.Context, tx pgx.Tx, tenantID, kbID string, expectedVersion uint64, operation string) error {
-	const checkSQL = `SELECT version, state FROM knowledge_bases WHERE tenant_id = $1 AND kb_id = $2`
+	const checkSQL = `SELECT version, state FROM knowledge_bases WHERE tenant_id = $1 AND kb_id = $2 FOR NO KEY UPDATE`
 	var actualVersion uint64
 	var stateStr string
 	err := tx.QueryRow(ctx, checkSQL, tenantID, kbID).Scan(&actualVersion, &stateStr)
@@ -751,7 +790,7 @@ func (r *CatalogRepo) disambiguateMissingOrConflictTx(ctx context.Context, tx pg
 }
 
 func (r *CatalogRepo) disambiguateStateOrConflictTx(ctx context.Context, tx pgx.Tx, tenantID, kbID string, expectedVersion uint64, requiredState entity.LifecycleState, operation string) error {
-	const checkSQL = `SELECT version, state FROM knowledge_bases WHERE tenant_id = $1 AND kb_id = $2`
+	const checkSQL = `SELECT version, state FROM knowledge_bases WHERE tenant_id = $1 AND kb_id = $2 FOR NO KEY UPDATE`
 	var actualVersion uint64
 	var stateStr string
 	err := tx.QueryRow(ctx, checkSQL, tenantID, kbID).Scan(&actualVersion, &stateStr)
@@ -867,6 +906,19 @@ func (m *InMemoryCatalogRepo) SetMigrationDeltaLag(tenantID, kbID string, lag ui
 	if m.metrics != nil {
 		m.metrics.MigrationDeltaLag.WithLabelValues(tenantID, kbID).Set(float64(lag))
 	}
+	return nil
+}
+
+// SetActiveMigrationBackfillAndFence updates backfill_completed and write_fence_drained on the active migration for testing.
+func (m *InMemoryCatalogRepo) SetActiveMigrationBackfillAndFence(tenantID, kbID string, backfillDone, fenceDrained bool) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	mig, ok := m.migrations[compositeKey(tenantID, kbID)]
+	if !ok || mig.State != entity.StateReindexing {
+		return entity.ErrInvalidStateTransition
+	}
+	mig.BackfillCompleted = backfillDone
+	mig.WriteFenceDrained = fenceDrained
 	return nil
 }
 
@@ -1202,10 +1254,10 @@ func (m *InMemoryCatalogRepo) AbortReindexing(_ context.Context, tenantID, kbID 
 }
 
 // SoftDelete atomically transitions the KnowledgeBase to TOMBSTONED under OCC.
-func (m *InMemoryCatalogRepo) SoftDelete(_ context.Context, tenantID, kbID string, expectedVersion uint64, now time.Time) error {
+func (m *InMemoryCatalogRepo) SoftDelete(_ context.Context, tenantID, kbID string, expectedVersion uint64, now time.Time) (*entity.KnowledgeBase, error) {
 	t, err := requireTenant(tenantID)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -1213,27 +1265,43 @@ func (m *InMemoryCatalogRepo) SoftDelete(_ context.Context, tenantID, kbID strin
 	key := compositeKey(t, kbID)
 	existing, ok := m.kbs[key]
 	if !ok || existing.State == entity.StateTombstoned {
-		return entity.ErrKnowledgeBaseNotFound
+		return nil, entity.ErrKnowledgeBaseNotFound
 	}
 	if existing.Version != expectedVersion {
 		if m.metrics != nil {
 			m.metrics.RecordOptimisticConflict(t, "DeleteKnowledgeBase")
 		}
-		return fmt.Errorf("%w: expected version %d, actual %d", entity.ErrVersionConflict, expectedVersion, existing.Version)
+		return nil, fmt.Errorf("%w: expected version %d, actual %d", entity.ErrVersionConflict, expectedVersion, existing.Version)
 	}
+
+	wasReindexing := existing.State == entity.StateReindexing
+	capturedCandidate := existing.CandidateIndexPointer
 
 	kbCopy := dto.CloneKB(existing)
 	if err := kbCopy.MarkTombstoned(expectedVersion, now); err != nil {
-		return err
+		return nil, err
 	}
 
-	outboxEvt, err := event.NewOutboxEvent(kbCopy, event.EventKBDeleted, nil, now)
+	var extraPayload map[string]any
+	if capturedCandidate != "" {
+		extraPayload = map[string]any{
+			"candidate_index_pointer": capturedCandidate,
+		}
+	}
+
+	outboxEvt, err := event.NewOutboxEvent(kbCopy, event.EventKBDeleted, extraPayload, now)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	m.kbs[key] = dto.CloneKB(kbCopy)
 	delete(m.migrations, key)
 	m.outbox = append(m.outbox, outboxEvt)
-	return nil
+
+	if wasReindexing && m.metrics != nil {
+		m.metrics.ActiveMigrations.WithLabelValues(t).Dec()
+		m.metrics.MigrationDeltaLag.WithLabelValues(t, kbID).Set(0)
+	}
+
+	return dto.CloneKB(kbCopy), nil
 }

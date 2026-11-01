@@ -75,39 +75,15 @@ func UnaryAuthLoggingInterceptor(
 
 func extractGRPCIdentity(md metadata.MD, jwtSecret, reqID string) (policy.CallerIdentity, error) {
 	authVal := firstMD(md, "authorization")
-	if authVal != "" {
-		parts := strings.SplitN(authVal, " ", 2)
-		if len(parts) != 2 || !strings.EqualFold(parts[0], "Bearer") {
-			return policy.CallerIdentity{}, middleware.ErrUnauthenticated
-		}
-		return middleware.ParseAndVerifyJWT(strings.TrimSpace(parts[1]), jwtSecret, reqID)
-	}
-
-	tenantID := firstMD(md, "x-tenant-id")
-	userID := firstMD(md, "x-user-id")
-	if userID == "" {
-		userID = firstMD(md, "x-subject")
-	}
-	rolesVal := firstMD(md, "x-roles")
-	if tenantID == "" || userID == "" {
+	if authVal == "" {
 		return policy.CallerIdentity{}, middleware.ErrUnauthenticated
 	}
 
-	var roles []policy.Role
-	if rolesVal != "" {
-		for _, tok := range strings.Split(rolesVal, ",") {
-			if trimmed := strings.TrimSpace(tok); trimmed != "" {
-				roles = append(roles, policy.Role(trimmed))
-			}
-		}
+	parts := strings.SplitN(authVal, " ", 2)
+	if len(parts) != 2 || !strings.EqualFold(parts[0], "Bearer") {
+		return policy.CallerIdentity{}, middleware.ErrUnauthenticated
 	}
-
-	return policy.CallerIdentity{
-		TenantID:  tenantID,
-		UserID:    userID,
-		Roles:     roles,
-		RequestID: reqID,
-	}, nil
+	return middleware.ParseAndVerifyJWT(strings.TrimSpace(parts[1]), jwtSecret, reqID)
 }
 
 func firstMD(md metadata.MD, key string) string {
