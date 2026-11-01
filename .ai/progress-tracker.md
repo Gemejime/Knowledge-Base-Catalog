@@ -34,6 +34,7 @@
   - **AI Context & Specification Alignment** ([`.ai/`](.ai), [`.ai.md`](.ai.md), [`GEMINI.MD`](GEMINI.MD)):
     - Updated all `.ai/` context files (`project-overview.md`, `architecture.md`, `doc-api.md`, `code-standards.md`, `security.md`, `ai-workflow-rules.md`, `agents.md`, `progress-tracker.md`) and `.ai.md` to specify `rag-kb-catalog-service` in Go 1.23+ adhering to `RAG KB Catalog Service Implementation Plan.pdf` and `Production Grade Backend Concepts.pdf`.
     - Created `GEMINI.MD` referencing `.ai/agents.md` and the complete `.ai/` directory.
+    - Executed comprehensive adversarial pressure-test against `tasks/RAG KB Catalog Service Implementation Plan.pdf` and all 6 reference PDFs in `tasks/`, hardening `abort_reindexing.go` command boundaries, the 6-event transactional outbox taxonomy (`KBCreated`, `KBUpdated`, `ReindexInitiated`, `PointerPromoted`, `ReindexAborted`, `KBDeleted`), dual-level Blue-Green migration state machine semantics (`REINDEXING -> PROMOTED / ABORTED -> ACTIVE`), Redis 7.2 Cluster CRC16 `{tenant_id}` hash-tag slot colocation, PostgreSQL 16 SQL DDL schemas, and Prometheus metric alias alignment (`kb_catalog_migration_delta_lag_records` / `kb_migration_delta_lag_records`).
 
 ---
 

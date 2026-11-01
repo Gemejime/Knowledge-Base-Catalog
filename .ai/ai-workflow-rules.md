@@ -27,7 +27,7 @@ Build `rag-kb-catalog-service` incrementally following a strict spec-driven work
 4. **Zero-Lag Promotion Gate (ADR-002)**: While in `REINDEXING` state, ingestion routing policy is `DUAL_WRITE`. `PromoteIndexPointer` is strictly blocked until backfill completes and delta replay buffer lag equals `0`.
 5. **Versioned Redis Cluster Caching (ADR-003)**: Read active configurations directly from Redis 7.2 Cluster using monotonic versioned keys (`kb:{tenant_id}:{id}:v{version}`) with bounded safety TTLs. Never use in-process L1 caches or Pub/Sub invalidation.
 6. **Optimistic Concurrency Control & PgBouncer Exec Mode (ADR-004)**: Configure `pgx/v5` with `default_query_exec_mode = exec` (`pgx.QueryExecModeExec`) for PgBouncer compatibility, and guard all entity updates with monotonic integer `version` checks (`409 Conflict` / gRPC `Aborted` on mismatch).
-7. **Transactional Outbox Delegated to Debezium (ADR-005)**: Commit domain events (`KBCreated`, `ReindexInitiated`, `PointerPromoted`, `KBDeleted`) to the PostgreSQL outbox table in the same transaction as entity updates; run zero internal outbox polling loops.
+7. **Transactional Outbox Delegated to Debezium (ADR-005)**: Commit domain events (`KBCreated`, `KBUpdated`, `ReindexInitiated`, `PointerPromoted`, `ReindexAborted`, `KBDeleted`) to the PostgreSQL outbox table in the same transaction as entity updates; run zero internal outbox polling loops.
 8. **Git Commit Standards**:
    - **Git Commit Frequency**: Commit code as you build. Every working session or phase must contain **at least two git commits**.
    - **Conventional Commit Patterns**: All git commit messages must strictly adhere to the following prefixes:

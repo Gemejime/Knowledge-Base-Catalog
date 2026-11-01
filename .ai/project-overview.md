@@ -39,7 +39,7 @@ The **`rag-kb-catalog-service`** serves as the central control-plane metadata au
 1. **Authoritative Control-Plane Metadata Governance**: Serve as the definitive system of record for Knowledge Base lifecycle states (`CREATING`, `ACTIVE`, `REINDEXING`, `PROMOTED`, `ABORTED`, `TOMBSTONED`), tenant isolation barriers, and retrieval profile configurations.
 2. **Zero-Downtime Blue-Green Schema Migration**: Drive safe vector schema upgrades (embedding models, dimension changes, distance metrics) via an orchestrated state machine enforcing delta write replay (`DUAL_WRITE`) and atomic pointer promotions gated on zero replay lag.
 3. **Strict Vector Schema Immutability**: Enforce immutability on physical index parameters (`ErrStructuralMutationDisallowed`), guaranteeing that incompatible dimensional or metric modifications cannot be applied directly in-place.
-4. **Transactional CDC Event Sourcing**: Record all state and configuration mutations (`KBCreated`, `ReindexInitiated`, `PointerPromoted`, `KBDeleted`) within atomic PostgreSQL database transactions via a dedicated outbox table for external WAL-driven Debezium/Kafka CDC streaming.
+4. **Transactional CDC Event Sourcing**: Record all state and configuration mutations (`KBCreated`, `KBUpdated`, `ReindexInitiated`, `PointerPromoted`, `ReindexAborted`, `KBDeleted`) within atomic PostgreSQL database transactions via a dedicated outbox table for external WAL-driven Debezium/Kafka CDC streaming.
 5. **Taxonomy & Metadata Discovery**: Provide low-latency querying of tenant corpora filtered by standardized hierarchical namespaces (e.g., `env:production`, `compliance:hipaa`, `domain:finance`).
 6. **Continuous Documentation & Contract Synchronization**: Ensure OpenAPI 3.1 specifications (`api/openapi/openapi.yaml`, `/docs`, `/redoc`, `/api/docs`, `/openapi.json`), Protobuf v3 contracts (`api/proto/v1/catalog.proto`, `api/proto/v1/types.proto`), and `.ai/doc-api.md` are continuously synchronized with every code modification.
 
@@ -49,8 +49,8 @@ The **`rag-kb-catalog-service`** serves as the central control-plane metadata au
 
 - **Direct-Cache Read Latency**: $P99 \le 5\text{ms}$ at 3,000 RPS per replica when reading active configurations directly from Redis 7.2 Cluster.
 - **Database Mutation Latency**: $P99 \le 20\text{ms}$ transaction write latency under peak concurrent tenant writes via PostgreSQL 16 + PgBouncer (`default_query_exec_mode = exec`).
-- **Zero Migration Data Loss**: `0` lost writes during schema re-indexing; delta replay buffer lag (`kb_migration_delta_lag_records`) must hit `0` before index promotion (`PromoteIndexPointer`) occurs.
-- **Cache Coherence Guarantee**: `100%` cache consistency enforced via monotonic version-keyed Redis entries (`kb:{tenant_id}:{id}:v{version}`) with bounded safety TTLs (e.g., 1 hour) and atomic database transactions—eliminating volatile in-process L1 invalidation buses.
+- **Zero Migration Data Loss**: `0` lost writes during schema re-indexing; delta replay buffer lag (`kb_catalog_migration_delta_lag_records` / `kb_migration_delta_lag_records`) must hit `0` before index promotion (`PromoteIndexPointer`) occurs.
+- **Cache Coherence Guarantee**: `100%` cache consistency enforced via monotonic version-keyed Redis entries (`kb:{tenant_id}:{id}:v{version}`) co-located with `kb:{tenant_id}:{id}:latest_version` via `{tenant_id}` CRC16 hash tags and bounded safety TTLs (1 hour / `3600s`) alongside atomic database transactions—eliminating volatile in-process L1 invalidation buses.
 - **Memory Footprint**: Resident Set Size (RSS) $\le 128\text{MiB}$ per Go pod (Requests: `64MiB`, Limits: `128MiB`; CPU Requests: `100m`, Limits: `500m`) under maximum production concurrency using standard `sync.Pool` allocations.
 - **Service Availability**: `99.99%` uptime with automated zero-downtime rolling updates (`PodDisruptionBudget` with `minAvailable: 2` and cross-AZ anti-affinity).
 
@@ -65,7 +65,7 @@ The **`rag-kb-catalog-service`** serves as the central control-plane metadata au
 - **Static Validated Model Registry**: Declarative, schema-validated mapping of supported embedding model names, valid dimension sizes, and allowed distance functions (`COSINE`, `DOT_PRODUCT`, `L2`).
 - **Hierarchical Taxonomy Engine**: CRUD and filtering support for structured key-value tags (`namespace:key=value`, e.g., `env:production`, `compliance:hipaa`).
 - **Coarse Access Control (RBAC/ABAC)**: Entity-level administrative permission evaluation (`Owner`, `Editor`, `Viewer`, `Auditor`).
-- **Transactional Outbox Commits**: Atomically committing domain events (`KBCreated`, `ReindexInitiated`, `PointerPromoted`, `KBDeleted`) alongside entity state updates in PostgreSQL.
+- **Transactional Outbox Commits**: Atomically committing domain events (`KBCreated`, `KBUpdated`, `ReindexInitiated`, `PointerPromoted`, `ReindexAborted`, `KBDeleted`) alongside entity state updates in PostgreSQL.
 - **Transport & Doc API**: High-performance gRPC (`catalog.proto`) for internal control-plane mesh (`rag-search-orchestrator`, `rag-ingestion-coordinator`) and OpenAPI 3.1 REST gateway (`/v1/knowledge-bases`, `/docs`, `/redoc`, `/api/docs`, `/openapi.json`, `/healthz`, `/ready`, `/metrics`) for platform administration.
 
 ### Exclusions (Out-of-Scope)

@@ -12,10 +12,10 @@ The `rag-kb-catalog-service` operates within the vertical Go control-plane tier 
 1. **Domain Layer (`internal/domain/`)**:
    - Pure domain entities (`knowledge_base.go`, `migration_state.go`, `model_reference.go`, `taxonomy.go`), repository port interfaces (`catalog_repository.go`, `outbox_repository.go`), invariant policy guards (`immutability_guard.go`, `access_evaluator.go`), and outbox domain events (`events.go`). Zero third-party I/O dependencies.
 2. **Application Layer (`internal/application/`)**:
-   - Command handlers (`create_knowledge_base.go`, `update_knowledge_base.go`, `trigger_reindexing.go`, `promote_pointer.go`, `delete_knowledge_base.go`), query handlers (`get_knowledge_base.go`, `list_knowledge_bases.go`), DTOs, and Temporal workflow triggers (`ingestion_trigger.go`).
+   - Command handlers (`create_knowledge_base.go`, `update_knowledge_base.go`, `trigger_reindexing.go`, `promote_pointer.go`, `abort_reindexing.go`, `delete_knowledge_base.go`), query handlers (`get_knowledge_base.go`, `list_knowledge_bases.go`), DTOs, and Temporal workflow triggers (`ingestion_trigger.go`).
 3. **Infrastructure Layer (`internal/infrastructure/`)**:
    - PostgreSQL 16 adapter (`pool.go` with `default_query_exec_mode = exec` for PgBouncer compatibility, `catalog_repo.go` with Optimistic Concurrency Control, `outbox_repo.go` for atomic outbox writes, and SQL `migrations/`).
-   - Redis 7.2 Cluster adapter (`cluster_client.go`) using deterministic monotonic versioned keys (`kb:{tenant_id}:{id}:v{version}`).
+   - Redis 7.2 Cluster adapter (`cluster_client.go`) using deterministic monotonic versioned keys (`kb:{tenant_id}:{id}:v{version}`) co-located with `kb:{tenant_id}:{id}:latest_version` via `{tenant_id}` CRC16 hash tags.
    - Temporal Go SDK client wrapper (`client.go`) triggering external backfill DAGs in `rag-ingestion-coordinator`.
 4. **Transport Layer (`internal/transport/`)**:
    - High-performance gRPC server (`catalog_server.go`, `interceptors/`) implementing `api/proto/v1/catalog.proto`.
@@ -27,11 +27,11 @@ The `rag-kb-catalog-service` operates within the vertical Go control-plane tier 
 
 1. **Continuous Doc API & OpenAPI Updates**: Both [`.ai/doc-api.md`](.ai/doc-api.md) and `api/openapi/openapi.yaml` (served via `/docs`, `/redoc`, `/api/docs`, `/openapi.json`) MUST be kept updated on **every code change or addition**, no matter how small the created or modified code is.
 2. **Secured Logging**: All logging must use structured JSON (`log/slog`). Strictly redact JWT tokens, `Authorization` headers, database DSNs/passwords, Redis credentials, and PII/PHI before emission. Never use raw `fmt.Print*` or `log.Print*` in production packages.
-3. **Strict Vector Schema Immutability (ADR-001)**: Reject in-place modifications to vector dimensions, distance metrics, or embedding models with `ErrStructuralMutationDisallowed`. Enforce the Blue-Green migration state machine (`ACTIVE` -> `REINDEXING` -> `PROMOTED` / `ABORTED`).
-4. **Replay Buffer & Zero-Lag Promotion Gate (ADR-002)**: Set routing policy to `DUAL_WRITE` during `REINDEXING`. Block `PromoteIndexPointer` until backfill completes and delta replay buffer lag equals `0`.
+3. **Strict Vector Schema Immutability (ADR-001)**: Reject in-place modifications to vector dimensions, distance metrics, or embedding models with `ErrStructuralMutationDisallowed`. Enforce the Blue-Green migration state machine (`ACTIVE` -> `REINDEXING` -> `PROMOTED` / `ABORTED`; direct `REINDEXING` -> `ACTIVE` disallowed).
+4. **Replay Buffer & Zero-Lag Promotion Gate (ADR-002)**: Set routing policy to `DUAL_WRITE` during `REINDEXING`. Block `PromoteIndexPointer` until backfill completes and delta replay buffer lag (`kb_catalog_migration_delta_lag_records` / `kb_migration_delta_lag_records`) equals `0`.
 5. **Versioned Redis Keys Over In-Process L1 Invalidation (ADR-003)**: Standardize on direct Redis 7.2 Cluster reads ($P99 \le 5\text{ms}$ at 3,000 RPS) using `kb:{tenant_id}:{id}:v{version}`. Never introduce volatile in-process L1 caches or Pub/Sub invalidation buses.
 6. **Optimistic Concurrency Control & PgBouncer Exec Mode (ADR-004)**: Configure `pgx/v5` with `default_query_exec_mode = exec` and enforce monotonic integer `version` checks on all updates ($P99 \le 20\text{ms}$ writes; HTTP `409 Conflict` / gRPC `Aborted` on version mismatch).
-7. **Transactional Outbox Delegated to Debezium (ADR-005)**: Commit domain events (`KBCreated`, `ReindexInitiated`, `PointerPromoted`, `KBDeleted`) atomically to the PostgreSQL outbox table in the same transaction as entity updates; run zero internal polling loops.
+7. **Transactional Outbox Delegated to Debezium (ADR-005)**: Commit domain events (`KBCreated`, `KBUpdated`, `ReindexInitiated`, `PointerPromoted`, `ReindexAborted`, `KBDeleted`) atomically to the PostgreSQL outbox table in the same transaction as entity updates; run zero internal polling loops.
 8. **Memory Bounds & Distroless Runtime**: Maintain flat RSS $\le 128\text{MiB}$ per Go pod using `sync.Pool` allocations and deploy via `gcr.io/distroless/static:nonroot`.
 
 ---
