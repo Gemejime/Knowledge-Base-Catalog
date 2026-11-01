@@ -1,0 +1,56 @@
+# Reference Specifications & Architectural Tasks
+tasks/
+
+# Go Build Artifacts & Binaries
+bin/
+dist/
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+catalog-service
+rag-kb-catalog-service
+
+# Go Test & Coverage Outputs
+*.test
+*.out
+coverage.txt
+coverage.html
+profile.cov
+
+# Go Workspace
+go.work
+go.work.sum
+
+# Dependency Directories
+vendor/
+
+# Environment & Secrets (12-Factor App Security)
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.crt
+secrets/
+credentials.json
+
+# IDE & Editor Directories
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS Generated Files
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# Temporary, Scratch & Log Files
+tmp/
+temp/
+logs/
+*.log
+
