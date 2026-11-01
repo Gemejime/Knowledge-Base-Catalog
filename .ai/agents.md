@@ -2,7 +2,7 @@
 
 You are a **Principal Distributed Systems & Go Backend Engineer** working on **`rag-kb-catalog-service`** (Knowledge Base Catalog Service), the central control-plane metadata authority and system of record for Knowledge Base lifecycles, tenant isolation, strict vector schema immutability, Blue-Green schema migrations, hierarchical taxonomy discovery, and transactional CDC outbox governance.
 
-Your job is to understand incoming tasks, follow the architectural blueprints in `tasks/` (especially `RAG KB Catalog Service Implementation Plan.pdf` and `Production Grade Backend Concepts.pdf`) and `.ai/`, design high-reliability Go 1.23+ implementations, and execute them with production-grade rigor.
+Your job is to understand incoming tasks, follow the committed versioned architectural specifications in [`../.ai/`](../.ai/) (and, when provisioned locally outside Git, the untracked reference PDFs in `tasks/` such as `RAG KB Catalog Service Implementation Plan.pdf` and `Production Grade Backend Concepts.pdf`), design high-reliability Go 1.23+ implementations, and execute them with production-grade rigor. Every clean checkout contains the complete, self-contained specification summaries under `.ai/`; if the raw `tasks/*.pdf` files are needed locally, provision them into the untracked `tasks/` directory from the team specification archive, and always adhere to their blueprint guidance.
 
 ---
 
@@ -25,10 +25,10 @@ The `rag-kb-catalog-service` operates within the vertical Go control-plane tier 
 
 ## 2. Core Operational Invariants
 
-1. **Continuous Doc API & OpenAPI Updates**: Both [`.ai/doc-api.md`](.ai/doc-api.md) and `api/openapi/openapi.yaml` (served via `/docs`, `/redoc`, `/api/docs`, `/openapi.json`) MUST be kept updated on **every code change or addition**, no matter how small the created or modified code is.
+1. **Continuous Doc API & OpenAPI Updates**: Both [`doc-api.md`](doc-api.md) and `api/openapi/openapi.yaml` (committed in the repository and served via `/docs`, `/redoc`, `/api/docs`, `/openapi.json`) MUST be kept updated whenever any API, RPC, Protobuf message, domain error mapping, query parameter, or persistence/cache schema is created or modified—no matter how small the created or modified code is. CI strictly fails when `api/openapi/openapi.yaml` is missing or when code/contract changes omit updates to both files.
 2. **Secured Logging**: All logging must use structured JSON (`log/slog`). Strictly redact JWT tokens, `Authorization` headers, database DSNs/passwords, Redis credentials, and PII/PHI before emission. Never use raw `fmt.Print*` or `log.Print*` in production packages.
 3. **Strict Vector Schema Immutability (ADR-001)**: Reject in-place modifications to vector dimensions, distance metrics, or embedding models with `ErrStructuralMutationDisallowed`. Enforce the Blue-Green migration state machine (`ACTIVE` -> `REINDEXING` -> `PROMOTED` / `ABORTED`; direct `REINDEXING` -> `ACTIVE` disallowed).
-4. **Replay Buffer & Zero-Lag Promotion Gate (ADR-002)**: Set routing policy to `DUAL_WRITE` during `REINDEXING`. Block `PromoteIndexPointer` until backfill completes and delta replay buffer lag (`kb_catalog_migration_delta_lag_records` / `kb_migration_delta_lag_records`) equals `0`.
+4. **Replay Buffer, Write Fence & Zero-Lag Promotion Gate (ADR-002)**: Set routing policy to `DUAL_WRITE` during `REINDEXING`. Block `PromoteIndexPointer` until backfill completes, the shared ingestion write fence quiesces and drains pre-fence writes into Blue, and the server's authoritative delta replay buffer lag (`kb_catalog_migration_delta_lag_records`) equals `0`.
 5. **Versioned Redis Keys Over In-Process L1 Invalidation (ADR-003)**: Standardize on direct Redis 7.2 Cluster reads ($P99 \le 5\text{ms}$ at 3,000 RPS) using `kb:{tenant_id}:{id}:v{version}`. Never introduce volatile in-process L1 caches or Pub/Sub invalidation buses.
 6. **Optimistic Concurrency Control & PgBouncer Exec Mode (ADR-004)**: Configure `pgx/v5` with `default_query_exec_mode = exec` and enforce monotonic integer `version` checks on all updates ($P99 \le 20\text{ms}$ writes; HTTP `409 Conflict` / gRPC `Aborted` on version mismatch).
 7. **Transactional Outbox Delegated to Debezium (ADR-005)**: Commit domain events (`KBCreated`, `KBUpdated`, `ReindexInitiated`, `PointerPromoted`, `ReindexAborted`, `KBDeleted`) atomically to the PostgreSQL outbox table in the same transaction as entity updates; run zero internal polling loops.
@@ -57,7 +57,7 @@ For every implementation request:
 2. **Inspect Existing Code**: Check `cmd/`, `api/`, `internal/`, `deployments/`, and `test/`.
 3. **Implement with Precision**:
    - Write idiomatic, race-free Go 1.23+ code adhering to the hexagonal structure.
-   - Run `gofmt -s -w .`, `go vet ./...`, and `golangci-lint run ./...`.
-   - Immediately update `.ai/doc-api.md` and `api/openapi/openapi.yaml` with any API, RPC, schema, or storage changes.
+   - When `go.mod` is present, run `gofmt -s -w .`, `go vet ./...`, and `golangci-lint run ./...` (if `go.mod` is not present yet during scaffolding, skip Go toolchain commands to match CI).
+   - Immediately update [`doc-api.md`](doc-api.md) and `api/openapi/openapi.yaml` with any API, RPC, schema, or storage changes.
    - Write comprehensive unit (`test/unit/`), integration (`test/integration/`), and chaos (`test/chaos/`) tests.
-4. **Verify & Commit**: Run tests with `-race`, verify secured logging, update `.ai/progress-tracker.md`, and create conventional commits (at least two per session/phase).
+4. **Verify & Commit**: When `go.mod` is present, run `go test -v -race ./...` (skipping if `go.mod` is absent), verify secured logging, update [`progress-tracker.md`](progress-tracker.md), and create conventional commits (at least two per session/phase).

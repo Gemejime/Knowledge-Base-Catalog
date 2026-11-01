@@ -7,13 +7,13 @@
 > - `GET /redoc` — Interactive OpenAPI 3.1 Documentation via **ReDoc**.
 > - `GET /openapi.json` & `GET /api/docs` — Machine-readable **OpenAPI 3.1 JSON/YAML Specification**.
 >
-> **CONTINUOUS DOC API UPDATE INVARIANT**: This file ([`.ai/doc-api.md`](.ai/doc-api.md)) and `api/openapi/openapi.yaml` MUST be updated on **every code change or addition**, no matter how small the created or modified code is.
+> **CONTINUOUS DOC API UPDATE INVARIANT**: This file ([`doc-api.md`](doc-api.md)) and `api/openapi/openapi.yaml` MUST be updated whenever any API, RPC, Protobuf message, domain error mapping, query parameter, or persistence/cache schema is created or modified—no matter how small the created or modified code is.
 
 ---
 
 ## 1. Documentation, Operational Probe & Administrative REST Endpoints (OpenAPI 3.1)
 
-The `rag-kb-catalog-service` runs an HTTP server (default port `8080`) serving OpenAPI 3.1 documentation, operational health/metrics probes, and administrative REST endpoints alongside the high-performance gRPC server (default port `50051`):
+The `rag-kb-catalog-service` runs an HTTP server (default port `8080`) serving OpenAPI 3.1 documentation, operational health/metrics probes, and administrative REST endpoints alongside the high-performance gRPC server (default port `50051`). All administrative `/v1/...` endpoints require Bearer JWT authentication (`bearerAuth`), and `tenant_id` is derived strictly from the verified caller JWT context (`sub` mapped to `user_id`, `tenant_id`, and `roles`), never trusted from unverified client request payloads:
 
 | Endpoint | Method | Response Format | Description |
 | :--- | :--- | :--- | :--- |
@@ -40,14 +40,18 @@ The `rag-kb-catalog-service` runs an HTTP server (default port `8080`) serving O
   "openapi": "3.1.0",
   "info": {
     "title": "RAG Knowledge Base Catalog Service API",
-    "description": "Control-plane metadata authority for Knowledge Base lifecycles, strict vector schema immutability, Blue-Green schema migrations, hierarchical taxonomy discovery, and transactional CDC outbox governance.",
+    "description": "Control-plane metadata authority for Knowledge Base lifecycles, strict vector schema immutability, Blue-Green schema migrations, hierarchical taxonomy discovery, and transactional CDC outbox governance. Tenant scope (tenant_id) is derived strictly from verified caller JWT claims propagated by the Edge API Gateway, never trusted from unverified payload fields.",
     "version": "1.0.0"
   },
+  "security": [
+    { "bearerAuth": [] }
+  ],
   "paths": {
     "/healthz": {
       "get": {
         "summary": "Liveness Probe",
         "operationId": "getLiveness",
+        "security": [],
         "responses": {
           "200": {
             "description": "Service process is alive",
@@ -70,6 +74,7 @@ The `rag-kb-catalog-service` runs an HTTP server (default port `8080`) serving O
       "get": {
         "summary": "Readiness Probe",
         "operationId": "getReadiness",
+        "security": [],
         "responses": {
           "200": {
             "description": "PostgreSQL pool and Redis Cluster are reachable",
@@ -88,7 +93,12 @@ The `rag-kb-catalog-service` runs an HTTP server (default port `8080`) serving O
             }
           },
           "503": {
-            "description": "Database pool saturated or upstream dependency unreachable"
+            "description": "Database pool saturated or upstream dependency unreachable",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ErrorResponse" }
+              }
+            }
           }
         }
       }
@@ -97,74 +107,491 @@ The `rag-kb-catalog-service` runs an HTTP server (default port `8080`) serving O
       "post": {
         "summary": "Create Knowledge Base",
         "operationId": "createKnowledgeBase",
+        "security": [{ "bearerAuth": [] }],
+        "parameters": [
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": false,
+            "schema": { "type": "string" }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/CreateKBRequest" }
+            }
+          }
+        },
         "responses": {
-          "201": { "description": "Knowledge Base created" },
-          "400": { "description": "Invalid taxonomy tag or unsupported model/dimension/metric" },
-          "403": { "description": "Insufficient RBAC permissions" }
+          "201": {
+            "description": "Knowledge Base created",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/KBResponse" }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid taxonomy tag or unsupported model/dimension/metric",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ErrorResponse" }
+              }
+            }
+          },
+          "403": {
+            "description": "Insufficient RBAC permissions",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ErrorResponse" }
+              }
+            }
+          }
         }
       },
       "get": {
         "summary": "List Knowledge Bases",
         "operationId": "listKnowledgeBases",
+        "security": [{ "bearerAuth": [] }],
+        "parameters": [
+          {
+            "name": "taxonomy_filter",
+            "in": "query",
+            "required": false,
+            "schema": { "type": "array", "items": { "type": "string" } }
+          },
+          {
+            "name": "page_size",
+            "in": "query",
+            "required": false,
+            "schema": { "type": "integer", "minimum": 1, "maximum": 100, "default": 20 }
+          },
+          {
+            "name": "page_token",
+            "in": "query",
+            "required": false,
+            "schema": { "type": "string" }
+          }
+        ],
         "responses": {
-          "200": { "description": "Paginated list of tenant Knowledge Bases" }
+          "200": {
+            "description": "Paginated list of tenant Knowledge Bases",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ListKBsResponse" }
+              }
+            }
+          }
         }
       }
     },
     "/v1/knowledge-bases/{kb_id}": {
+      "parameters": [
+        { "$ref": "#/components/parameters/KBIdPathParam" }
+      ],
       "get": {
         "summary": "Get Knowledge Base",
         "operationId": "getKnowledgeBase",
+        "security": [{ "bearerAuth": [] }],
+        "parameters": [
+          {
+            "name": "min_version",
+            "in": "query",
+            "required": false,
+            "schema": { "type": "integer", "minimum": 1 }
+          }
+        ],
         "responses": {
-          "200": { "description": "Knowledge Base configuration and pointer state" },
-          "404": { "description": "Knowledge Base not found within tenant scope" }
+          "200": {
+            "description": "Knowledge Base configuration and pointer state",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/KBResponse" }
+              }
+            }
+          },
+          "404": {
+            "description": "Knowledge Base not found within tenant scope",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ErrorResponse" }
+              }
+            }
+          }
         }
       },
       "patch": {
         "summary": "Update Knowledge Base Metadata",
         "operationId": "updateKnowledgeBase",
+        "security": [{ "bearerAuth": [] }],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/UpdateKBRequest" }
+            }
+          }
+        },
         "responses": {
-          "200": { "description": "Knowledge Base updated and version incremented" },
-          "409": { "description": "Optimistic concurrency version conflict" },
-          "422": { "description": "ErrStructuralMutationDisallowed: In-place vector schema mutation rejected" }
+          "200": {
+            "description": "Knowledge Base updated and version incremented",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/KBResponse" }
+              }
+            }
+          },
+          "409": {
+            "description": "Optimistic concurrency version conflict",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ErrorResponse" }
+              }
+            }
+          },
+          "422": {
+            "description": "ErrStructuralMutationDisallowed: In-place vector schema mutation rejected",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ErrorResponse" }
+              }
+            }
+          }
         }
       },
       "delete": {
         "summary": "Delete Knowledge Base (Tombstone)",
         "operationId": "deleteKnowledgeBase",
+        "security": [{ "bearerAuth": [] }],
+        "parameters": [
+          {
+            "name": "expected_version",
+            "in": "query",
+            "required": true,
+            "schema": { "type": "integer", "minimum": 1 }
+          }
+        ],
         "responses": {
           "204": { "description": "Knowledge Base tombstoned and purge event written to outbox" },
-          "409": { "description": "Optimistic concurrency version conflict" }
+          "409": {
+            "description": "Optimistic concurrency version conflict",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ErrorResponse" }
+              }
+            }
+          }
         }
       }
     },
     "/v1/knowledge-bases/{kb_id}:triggerReindexing": {
+      "parameters": [
+        { "$ref": "#/components/parameters/KBIdPathParam" }
+      ],
       "post": {
         "summary": "Trigger Blue-Green Schema Re-Indexing",
         "operationId": "triggerReindexing",
+        "security": [{ "bearerAuth": [] }],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/TriggerReindexingRequest" }
+            }
+          }
+        },
         "responses": {
-          "202": { "description": "Re-indexing state initiated, DUAL_WRITE enabled, Temporal backfill DAG triggered" },
-          "409": { "description": "Migration already in progress or version mismatch" }
+          "202": {
+            "description": "Re-indexing state initiated, DUAL_WRITE enabled, Temporal backfill DAG triggered",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/MigrationResponse" }
+              }
+            }
+          },
+          "409": {
+            "description": "Migration already in progress or version mismatch",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ErrorResponse" }
+              }
+            }
+          }
         }
       }
     },
     "/v1/knowledge-bases/{kb_id}:promotePointer": {
+      "parameters": [
+        { "$ref": "#/components/parameters/KBIdPathParam" }
+      ],
       "post": {
         "summary": "Promote Blue Index Pointer",
         "operationId": "promoteIndexPointer",
+        "security": [{ "bearerAuth": [] }],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/PromotePointerRequest" }
+            }
+          }
+        },
         "responses": {
-          "200": { "description": "Pointer atomically switched to Blue index and version bumped" },
-          "409": { "description": "Precondition failed: delta replay buffer lag > 0 or OCC conflict" }
+          "200": {
+            "description": "Pointer atomically switched to Blue index and version bumped",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/KBResponse" }
+              }
+            }
+          },
+          "409": {
+            "description": "Precondition failed: authoritative delta replay buffer lag > 0, write fence not drained, or OCC conflict",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ErrorResponse" }
+              }
+            }
+          }
         }
       }
     },
     "/v1/knowledge-bases/{kb_id}:abortReindexing": {
+      "parameters": [
+        { "$ref": "#/components/parameters/KBIdPathParam" }
+      ],
       "post": {
         "summary": "Abort Blue-Green Re-Indexing",
         "operationId": "abortReindexing",
+        "security": [{ "bearerAuth": [] }],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/AbortReindexingRequest" }
+            }
+          }
+        },
         "responses": {
-          "200": { "description": "Migration aborted, search pointer locked to Green, Blue cleanup event emitted" }
+          "200": {
+            "description": "Migration aborted, search pointer locked to Green, Blue cleanup event emitted",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/KBResponse" }
+              }
+            }
+          },
+          "409": {
+            "description": "Migration not in REINDEXING state or version mismatch",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ErrorResponse" }
+              }
+            }
+          }
         }
+      }
+    }
+  },
+  "components": {
+    "securitySchemes": {
+      "bearerAuth": {
+        "type": "http",
+        "scheme": "bearer",
+        "bearerFormat": "JWT",
+        "description": "Verified JWT bearer token. Edge Gateway extracts tenant_id, sub (mapped to canonical user_id), and roles into verified request context."
+      }
+    },
+    "parameters": {
+      "KBIdPathParam": {
+        "name": "kb_id",
+        "in": "path",
+        "required": true,
+        "description": "UUIDv4 identifier of the Knowledge Base within the authenticated tenant scope",
+        "schema": { "type": "string", "format": "uuid" }
+      }
+    },
+    "schemas": {
+      "LifecycleState": {
+        "type": "string",
+        "enum": ["CREATING", "ACTIVE", "REINDEXING", "PROMOTED", "ABORTED", "TOMBSTONED"]
+      },
+      "RoutingPolicy": {
+        "type": "string",
+        "enum": ["GREEN_ONLY", "DUAL_WRITE"]
+      },
+      "DistanceMetric": {
+        "type": "string",
+        "enum": ["COSINE", "DOT_PRODUCT", "L2"]
+      },
+      "VectorSchema": {
+        "type": "object",
+        "properties": {
+          "embedding_model": { "type": "string" },
+          "dimensions": { "type": "integer", "minimum": 1 },
+          "distance_metric": { "$ref": "#/components/schemas/DistanceMetric" },
+          "schema_version": { "type": "string" }
+        },
+        "required": ["embedding_model", "dimensions", "distance_metric", "schema_version"]
+      },
+      "RetrievalProfile": {
+        "type": "object",
+        "properties": {
+          "default_top_k": { "type": "integer", "minimum": 1, "maximum": 200 },
+          "dense_weight": { "type": "number", "format": "float" },
+          "sparse_weight": { "type": "number", "format": "float" },
+          "reranker_candidate_pool_size": { "type": "integer", "minimum": 1 },
+          "cross_encoder_confidence_threshold": { "type": "number", "format": "float" }
+        },
+        "required": [
+          "default_top_k",
+          "dense_weight",
+          "sparse_weight",
+          "reranker_candidate_pool_size",
+          "cross_encoder_confidence_threshold"
+        ]
+      },
+      "KnowledgeBase": {
+        "type": "object",
+        "properties": {
+          "tenant_id": { "type": "string", "readOnly": true },
+          "kb_id": { "type": "string", "format": "uuid" },
+          "name": { "type": "string" },
+          "description": { "type": "string" },
+          "version": { "type": "integer", "minimum": 1 },
+          "state": { "$ref": "#/components/schemas/LifecycleState" },
+          "routing_policy": { "$ref": "#/components/schemas/RoutingPolicy" },
+          "active_index_pointer": { "type": "string" },
+          "candidate_index_pointer": { "type": "string" },
+          "active_schema": { "$ref": "#/components/schemas/VectorSchema" },
+          "candidate_schema": { "$ref": "#/components/schemas/VectorSchema" },
+          "retrieval_profile": { "$ref": "#/components/schemas/RetrievalProfile" },
+          "taxonomy_tags": { "type": "array", "items": { "type": "string" } },
+          "created_at": { "type": "string", "format": "date-time" },
+          "updated_at": { "type": "string", "format": "date-time" }
+        },
+        "required": [
+          "tenant_id",
+          "kb_id",
+          "name",
+          "version",
+          "state",
+          "routing_policy",
+          "active_index_pointer",
+          "active_schema",
+          "retrieval_profile",
+          "taxonomy_tags",
+          "created_at",
+          "updated_at"
+        ]
+      },
+      "KBResponse": {
+        "type": "object",
+        "properties": {
+          "knowledge_base": { "$ref": "#/components/schemas/KnowledgeBase" }
+        },
+        "required": ["knowledge_base"]
+      },
+      "CreateKBRequest": {
+        "type": "object",
+        "properties": {
+          "name": { "type": "string" },
+          "description": { "type": "string" },
+          "vector_schema": { "$ref": "#/components/schemas/VectorSchema" },
+          "retrieval_profile": { "$ref": "#/components/schemas/RetrievalProfile" },
+          "taxonomy_tags": { "type": "array", "items": { "type": "string" } },
+          "idempotency_key": { "type": "string" }
+        },
+        "required": ["name", "vector_schema", "retrieval_profile"]
+      },
+      "UpdateKBRequest": {
+        "type": "object",
+        "description": "Partial metadata update guarded by expected_version. Use update_mask to distinguish omitted taxonomy_tags (preserves existing tags) from an explicit empty array [] (clears all tags).",
+        "properties": {
+          "expected_version": { "type": "integer", "minimum": 1 },
+          "name": { "type": "string" },
+          "description": { "type": "string" },
+          "retrieval_profile": { "$ref": "#/components/schemas/RetrievalProfile" },
+          "taxonomy_tags": { "type": "array", "items": { "type": "string" } },
+          "update_mask": {
+            "type": "array",
+            "items": { "type": "string" },
+            "description": "Explicit field mask (e.g., [\"name\", \"description\", \"retrieval_profile\", \"taxonomy_tags\"])."
+          },
+          "attempted_schema_mutation": { "$ref": "#/components/schemas/VectorSchema" }
+        },
+        "required": ["expected_version"]
+      },
+      "ListKBsResponse": {
+        "type": "object",
+        "properties": {
+          "knowledge_bases": {
+            "type": "array",
+            "items": { "$ref": "#/components/schemas/KnowledgeBase" }
+          },
+          "next_page_token": { "type": "string" }
+        },
+        "required": ["knowledge_bases"]
+      },
+      "TriggerReindexingRequest": {
+        "type": "object",
+        "properties": {
+          "expected_version": { "type": "integer", "minimum": 1 },
+          "target_blue_schema": { "$ref": "#/components/schemas/VectorSchema" }
+        },
+        "required": ["expected_version", "target_blue_schema"]
+      },
+      "MigrationResponse": {
+        "type": "object",
+        "properties": {
+          "tenant_id": { "type": "string" },
+          "kb_id": { "type": "string", "format": "uuid" },
+          "migration_id": { "type": "string", "format": "uuid" },
+          "state": { "$ref": "#/components/schemas/LifecycleState" },
+          "routing_policy": { "$ref": "#/components/schemas/RoutingPolicy" },
+          "candidate_index_pointer": { "type": "string" },
+          "version": { "type": "integer", "minimum": 1 }
+        },
+        "required": [
+          "tenant_id",
+          "kb_id",
+          "migration_id",
+          "state",
+          "routing_policy",
+          "candidate_index_pointer",
+          "version"
+        ]
+      },
+      "PromotePointerRequest": {
+        "type": "object",
+        "properties": {
+          "expected_version": { "type": "integer", "minimum": 1 },
+          "verified_delta_lag_records": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Optional client-observed delta lag assertion checked against the server's authoritative migration lag (kb_migrations.delta_lag_records)."
+          }
+        },
+        "required": ["expected_version"]
+      },
+      "AbortReindexingRequest": {
+        "type": "object",
+        "properties": {
+          "expected_version": { "type": "integer", "minimum": 1 },
+          "reason": { "type": "string" }
+        },
+        "required": ["expected_version", "reason"]
+      },
+      "ErrorResponse": {
+        "type": "object",
+        "properties": {
+          "code": { "type": "string" },
+          "message": { "type": "string" },
+          "request_id": { "type": "string" }
+        },
+        "required": ["code", "message"]
       }
     }
   }
@@ -208,6 +635,7 @@ package rag.catalog.v1;
 
 option go_package = "github.com/gemejime/rag-kb-catalog-service/api/proto/v1;catalogv1";
 
+import "google/protobuf/field_mask.proto";
 import "google/protobuf/timestamp.proto";
 
 enum LifecycleState {
@@ -285,6 +713,7 @@ message UpdateKBRequest {
   optional RetrievalProfile retrieval_profile = 6;
   repeated string taxonomy_tags = 7;
   optional VectorSchema attempted_schema_mutation = 8; // Guarded: triggers ErrStructuralMutationDisallowed if mutated
+  google.protobuf.FieldMask update_mask = 9; // Selected-field semantics: include "taxonomy_tags" with empty taxonomy_tags to clear tags; omit "taxonomy_tags" from mask to preserve existing tags
 }
 
 message GetKBRequest {
@@ -332,7 +761,7 @@ message PromotePointerRequest {
   string tenant_id = 1;
   string kb_id = 2;
   uint64 expected_version = 3;
-  uint64 verified_delta_lag_records = 4; // Must equal 0 for promotion
+  optional uint64 verified_delta_lag_records = 4; // Optional client assertion checked against the server's authoritative migration lag (kb_migrations.delta_lag_records), not the source of the promotion gate
 }
 
 message AbortReindexingRequest {
@@ -356,12 +785,12 @@ message KBResponse {
 - **Static Validated Model Registry (`internal/domain/entity/model_reference.go`)**: Validates model identifiers against supported dimension sizes and allowed distance metrics before persistence.
 
 ### B. Blue-Green Migration State Machine (`internal/domain/entity/migration_state.go`)
-- **Pure State Transition Matrix (`ValidateTransition(from, to LifecycleState, deltaLag uint64)`)**:
+- **Pure State Transition Matrix (`ValidateTransition(from, to LifecycleState, authoritativeDeltaLag uint64)`)**:
   - `CREATING` -> `ACTIVE`: Initial creation transition.
   - `ACTIVE` -> `REINDEXING`: Allowed via `TriggerReindexing`. Sets `routing_policy = DUAL_WRITE`, allocates `candidate_index_pointer` (Blue), inserts an active migration row in `kb_migrations`, emits `ReindexInitiated` to `outbox_events`, and triggers the Temporal backfill workflow in `rag-ingestion-coordinator`.
-  - `REINDEXING` -> `PROMOTED`: Allowed via `PromoteIndexPointer` **ONLY IF** `delta_lag == 0` (`kb_catalog_migration_delta_lag_records == 0`, also referenced as `kb_migration_delta_lag_records`). If `delta_lag > 0`, returns `ErrDeltaLagNotZero` (HTTP `409 Conflict` / gRPC `FailedPrecondition`).
+  - `REINDEXING` -> `PROMOTED`: Allowed via `PromoteIndexPointer` **ONLY IF** the **server's authoritative delta lag** (`kb_migrations.delta_lag_records` / ingestion write-fence watermark, exported via `kb_catalog_migration_delta_lag_records`) equals `0` after the shared ingestion write fence has quiesced and drained all pre-fence writes into Blue (and any optional client-supplied `verified_delta_lag_records` assertion also matches `0`). If authoritative `delta_lag > 0` or the write fence is not drained, returns `ErrDeltaLagNotZero` (HTTP `409 Conflict` / gRPC `FailedPrecondition`).
   - `REINDEXING` -> `ABORTED`: Allowed via `AbortReindexing` (or `AbortMigration` during worker failure rollback).
-  - `REINDEXING` -> `ACTIVE` (Direct): **Strictly Disallowed** (`ErrInvalidStateTransition`) without executing an explicit `PromoteIndexPointer` (with `delta_lag == 0`) or `AbortReindexing` transition first.
+  - `REINDEXING` -> `ACTIVE` (Direct): **Strictly Disallowed** (`ErrInvalidStateTransition`) without executing an explicit `PromoteIndexPointer` (with authoritative `delta_lag == 0`) or `AbortReindexing` transition first.
 - **Aggregate Settlement After `PROMOTED` or `ABORTED`**:
   - When `PromoteIndexPointer` transitions the migration through `PROMOTED`, the migration record in `kb_migrations` is persisted as `PROMOTED`, `active_index_pointer` atomically switches to the Blue pointer, `active_schema` updates to `candidate_schema`, `candidate_index_pointer` is cleared, `routing_policy` resets to `GREEN_ONLY`, the KB operational state settles at `ACTIVE` (`version = version + 1`), and `PointerPromoted` is written to `outbox_events`.
   - When `AbortReindexing` transitions the migration through `ABORTED`, the migration record in `kb_migrations` is persisted as `ABORTED`, `active_index_pointer` remains locked to Green, `candidate_index_pointer` is cleared, `routing_policy` resets to `GREEN_ONLY`, the KB operational state resets to `ACTIVE` (`version = version + 1`), and `ReindexAborted` (cleanup event to purge the orphaned Blue index) is written to `outbox_events`.
@@ -475,10 +904,11 @@ CREATE TABLE IF NOT EXISTS idempotency_keys (
   - Monotonic version pointer key: `kb:{tenant_id}:{kb_id}:latest_version`
   - Because Redis 7.2 Cluster hashes the first `{...}` substring (`{tenant_id}`), both keys for a given tenant automatically map to the **exact same Redis Cluster CRC16 hash slot**, enabling atomic single-RTT Lua (`EVALSHA`) or pipelined operations without `CROSSSLOT` errors.
 - **TTL**: Bounded safety TTL (default `3600s` / 1 hour).
-- **Coherence & Monotonic Write-Through**:
+- **Coherence, Eventual Consistency & Causal Freshness (`min_version`)**:
   - Zero in-process L1 caching and zero Pub/Sub invalidation buses.
-  - Upon committing version `v+1` in PostgreSQL, the service writes `kb:{tenant_id}:{kb_id}:v{v+1}` to Redis Cluster and advances `kb:{tenant_id}:{kb_id}:latest_version` only if `v+1 > current_latest_version`, guaranteeing that concurrent readers never observe stale data even under out-of-order network scheduling.
-  - On `GetKnowledgeBase`, if the caller specifies `min_version` (or reads the latest version), a single-RTT Lua script resolves the versioned key `kb:{tenant_id}:{kb_id}:v{version}`; on cache miss (or if cached version `< min_version`), the handler falls back to PostgreSQL and populates the versioned Redis key.
+  - Immutable versioned snapshots (`kb:{tenant_id}:{kb_id}:v{version}`) never mutate once written. Upon committing version `v+1` in PostgreSQL, the service performs a post-commit write of `kb:{tenant_id}:{kb_id}:v{v+1}` to Redis Cluster and advances `kb:{tenant_id}:{kb_id}:latest_version` via a Lua monotonic guard (`if new_ver > cur_ver`).
+  - **Bounded Eventual Consistency on Unconstrained Reads**: Because the PostgreSQL commit precedes the asynchronous/post-commit Redis update, a network fault or process crash between PostgreSQL commit and Redis write can leave `kb:{tenant_id}:{kb_id}:latest_version` (and the cached `active_index_pointer`) pointing to version `v` until a subsequent read/write repairs the cache or the 1-hour safety TTL expires.
+  - **Read-Your-Writes Freshness via `min_version`**: Callers requiring strict causal freshness (such as post-mutation verifiers or promotion orchestrators knowing committed version `v+1`) pass `min_version = v+1` on `GetKnowledgeBase`. When `cached_version < min_version` (or on a cache miss), `GetKnowledgeBase` rejects the stale Redis entry, queries PostgreSQL directly, and backfills `kb:{tenant_id}:{kb_id}:v{v+1}` and `latest_version` in Redis Cluster.
 
 ---
 

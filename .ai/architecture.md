@@ -16,7 +16,7 @@
 
 ## 2. Production-Grade 5-Layer Backend Architecture
 
-Aligned with [Production Grade Backend Concepts.pdf](tasks/Production%20Grade%20Backend%20Concepts.pdf) and [RAG KB Catalog Service Implementation Plan.pdf](tasks/RAG%20KB%20Catalog%20Service%20Implementation%20Plan.pdf):
+Aligned with the committed specifications in [`../.ai/`](../.ai/) (and the local-only untracked reference PDFs `tasks/Production Grade Backend Concepts.pdf` and `tasks/RAG KB Catalog Service Implementation Plan.pdf` when provisioned locally):
 
 ### Layer 1: API & Routing
 1. **Entry Points (`cmd/catalog-service/main.go`)**:
@@ -31,7 +31,7 @@ Aligned with [Production Grade Backend Concepts.pdf](tasks/Production%20Grade%20
      - `GET /ready`: Readiness probe verifying active PostgreSQL pool and Redis Cluster connectivity.
      - `GET /metrics`: Prometheus scrape endpoint.
 3. **Middleware & Interceptors (`internal/transport/http/middleware/`, `internal/transport/grpc/interceptors/`)**:
-   - Request correlation ID injection (`X-Request-ID` / ULID/UUID), JWT claim extraction (`tenant_id`, `subject`, `roles`), structured request/response logging with PII/token redaction, panic recovery, and latency histogram recording.
+   - Request correlation ID injection (`X-Request-ID` / ULID/UUID), JWT claim extraction (`tenant_id`, incoming `sub`/`subject` explicitly mapped to canonical `user_id` in the request context before `access_evaluator.go` executes, and `roles`), structured request/response logging with PII/token redaction, panic recovery, and latency histogram recording.
 4. **Input Validation & Sanitization**:
    - Strict schema validation at the transport boundary and domain invariant enforcement (`internal/domain/policy/immutability_guard.go`, `internal/domain/entity/model_reference.go`, `internal/domain/entity/taxonomy.go`).
    - Rejects malformed hierarchical namespace tags (`namespace:key=value`) and unsupported embedding model/dimension/metric combinations before hitting persistence.
@@ -82,7 +82,7 @@ Aligned with [Production Grade Backend Concepts.pdf](tasks/Production%20Grade%20
       - `kb_catalog_requests_total` (Counter: `method`, `tenant`, `status_code`)
       - `kb_catalog_request_duration_seconds` (Histogram: P50, P90, P99)
       - `kb_catalog_optimistic_conflicts_total` (Counter: HTTP 409 / gRPC Aborted)
-      - `kb_catalog_migration_delta_lag_records` (Gauge: outstanding delta write backlog before cutover; referenced in Runbook 1 as `kb_migration_delta_lag_records`)
+      - `kb_catalog_migration_delta_lag_records` (Gauge: outstanding delta write backlog before cutover; a Prometheus recording rule `record: kb_migration_delta_lag_records` -> `expr: kb_catalog_migration_delta_lag_records` is defined for Runbook 1 compatibility)
       - `kb_catalog_active_migrations` (Gauge: currently active Blue-Green migrations)
     - **Distributed Tracing**: OpenTelemetry trace context propagation across gRPC interceptors and HTTP middleware.
 20. **Health Checks & Graceful Error Handling**:
@@ -192,7 +192,7 @@ Per `My Naming Convention.pdf`, `Disaggregated Hybrid Model Architecture.pdf`, a
 ## 5. Architectural Decision Records (ADRs)
 
 - **ADR-001: Vector Schema Immutability & Re-Indexing State Machine**: Forbids in-place vector index schema mutations (`ErrStructuralMutationDisallowed`). Any dimension, model, or distance metric upgrade must execute via a tracked Blue-Green migration state machine (`ACTIVE` -> `REINDEXING` -> `PROMOTED` / `ABORTED`).
-- **ADR-002: Replay Buffer Protocol for Live Re-Indexing Writes**: Specifies that while a knowledge base is in `REINDEXING` status, write ingress routes live documents to both Green and a replay buffer for Blue (`DUAL_WRITE`). Atomic promotion (`PromoteIndexPointer`) is strictly blocked until backfill finishes and delta buffer lag reaches zero (`lag == 0`).
+- **ADR-002: Replay Buffer & Shared Write-Fence Protocol for Live Re-Indexing Writes**: Specifies that while a knowledge base is in `REINDEXING` status, write ingress routes live documents to both Green and a replay buffer for Blue (`DUAL_WRITE`). To prevent TOCTOU races where new writes commit between observing zero lag and switching the pointer, cutover enforces a **shared ingestion write fence (quiesce-and-drain high-water mark)**: every ingestion writer checks the KB write-fence epoch/high-water mark in Redis/PostgreSQL; prior to promotion, the migration coordinator activates the write fence (quiescing new `DUAL_WRITE` mutations or holding them at the fence barrier), drains all pre-fence delta records into Blue until the server's authoritative `kb_migrations.delta_lag_records` (`kb_catalog_migration_delta_lag_records`) equals `0`, and atomically executes `PromoteIndexPointer` under OCC (`version = version + 1`) so zero writes can commit between the final `lag == 0` check and pointer promotion.
 - **ADR-003: Versioned Redis Keys Over In-Process L1 Invalidation**: Eliminates in-process memory caching and Redis Pub/Sub invalidation buses to prevent silent split-brain conditions. Standardizes on direct Redis Cluster reads using monotonic version keys (`kb:{tenant_id}:{id}:v{version}`).
 - **ADR-004: Optimistic Concurrency Control Over Pessimistic Row Locking**: Enforces an integer `version` check (`version = version + 1`) on all updates to avoid row-level lock contention and deadlocks under PgBouncer transaction-mode connection pooling.
 - **ADR-005: Outbox Tailing Delegated Exclusively to Debezium**: Removes internal application-level outbox polling loops. The service commits event records to an `outbox_events` table within the same PostgreSQL transaction; Debezium captures changes directly from the PostgreSQL WAL.

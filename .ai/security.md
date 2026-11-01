@@ -4,15 +4,16 @@
 
 1. **Multi-Tenant Control-Plane Isolation**:
    - `rag-kb-catalog-service` governs metadata and index pointers across multiple enterprise tenants. A cross-tenant leakage or unauthorized pointer mutation could expose or corrupt proprietary vector corpora.
-   - **Mitigation**: All PostgreSQL tables (`knowledge_bases`, `kb_migrations`, `outbox_events`) enforce compound primary keys (`(tenant_id, kb_id)`) or explicit `tenant_id` indices, and all Redis Cluster keys are prefixed with `kb:{tenant_id}:{id}:v{version}`. Repositories reject any operation missing an explicit, validated tenant context.
+   - **Mitigation**: All PostgreSQL tables (`knowledge_bases`, `kb_migrations`, `outbox_events`, `idempotency_keys`) enforce compound primary keys (`(tenant_id, kb_id)`) or explicit `tenant_id` indices, and all Redis Cluster keys preserve the `{tenant_id}` CRC16 hash tag across both versioned payload keys (`kb:{tenant_id}:{id}:v{version}`) and the monotonic version pointer key (`kb:{tenant_id}:{id}:latest_version`). Repositories reject any operation missing an explicit, validated tenant context.
 2. **Authentication vs. Authorization (AuthN vs. AuthZ)**:
    - **AuthN**: Edge API Gateway validates caller JWT signatures and propagates verified claims (`tenant_id`, `user_id`, `roles`) via gRPC metadata and HTTP headers.
    - **AuthZ (`internal/domain/policy/access_evaluator.go`)**: Coarse entity-level RBAC/ABAC (`Owner`, `Editor`, `Viewer`, `Auditor`) is evaluated before executing any administrative command (`CreateKnowledgeBase`, `UpdateKnowledgeBase`, `DeleteKnowledgeBase`, `TriggerReindexing`, `PromoteIndexPointer`, `AbortReindexing`). Fine-grained document ACL bitmaps are delegated strictly to `rag-search-orchestrator`.
 3. **Destructive In-Place Vector Schema Mutations**:
    - Mutating vector dimensions (e.g., `768` to `1536`) or distance metrics (`COSINE` to `L2`) in-place would corrupt active HNSW indices and break live search queries.
    - **Mitigation (ADR-001)**: `immutability_guard.go` strictly rejects in-place structural edits with `ErrStructuralMutationDisallowed`, forcing all schema upgrades through the tracked Blue-Green migration state machine (`ACTIVE` -> `REINDEXING` -> `PROMOTED` / `ABORTED`).
-4. **Distroless Non-Root Container Hardening**:
-   - Production containers run on `gcr.io/distroless/static:nonroot` (non-root user, read-only root filesystem, zero shell or package manager binaries) with strict Kubernetes resource bounds (CPU Limit `500m`, Memory Limit `128MiB`).
+4. **Distroless Non-Root Container & Kubernetes Deployment Hardening**:
+   - Production containers use the `gcr.io/distroless/static:nonroot` base image, which guarantees a non-root user and strips shells and package manager binaries at the container image layer.
+   - Production Kubernetes/Helm deployment manifests (`deployments/helm/`) MUST explicitly enforce `securityContext.readOnlyRootFilesystem: true`, `runAsNonRoot: true`, `allowPrivilegeEscalation: false`, and strict container resource bounds (CPU Requests `100m` / Limits `500m`, Memory Requests `64MiB` / Limits `128MiB`) as runtime deployment requirements.
 
 ---
 
