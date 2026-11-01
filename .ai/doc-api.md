@@ -148,6 +148,14 @@ The `rag-kb-catalog-service` runs an HTTP server (default port `8080`) serving O
                 "schema": { "$ref": "#/components/schemas/ErrorResponse" }
               }
             }
+          },
+          "409": {
+            "description": "Duplicate Knowledge Base name within tenant or Idempotency-Key payload hash conflict",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ErrorResponse" }
+              }
+            }
           }
         }
       },
@@ -243,6 +251,14 @@ The `rag-kb-catalog-service` runs an HTTP server (default port `8080`) serving O
               }
             }
           },
+          "404": {
+            "description": "Knowledge Base not found within tenant scope",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ErrorResponse" }
+              }
+            }
+          },
           "409": {
             "description": "Optimistic concurrency version conflict",
             "content": {
@@ -275,6 +291,14 @@ The `rag-kb-catalog-service` runs an HTTP server (default port `8080`) serving O
         ],
         "responses": {
           "204": { "description": "Knowledge Base tombstoned and purge event written to outbox" },
+          "404": {
+            "description": "Knowledge Base not found within tenant scope",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ErrorResponse" }
+              }
+            }
+          },
           "409": {
             "description": "Optimistic concurrency version conflict",
             "content": {
@@ -308,6 +332,14 @@ The `rag-kb-catalog-service` runs an HTTP server (default port `8080`) serving O
             "content": {
               "application/json": {
                 "schema": { "$ref": "#/components/schemas/MigrationResponse" }
+              }
+            }
+          },
+          "404": {
+            "description": "Knowledge Base not found within tenant scope",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ErrorResponse" }
               }
             }
           },
@@ -347,6 +379,14 @@ The `rag-kb-catalog-service` runs an HTTP server (default port `8080`) serving O
               }
             }
           },
+          "404": {
+            "description": "Knowledge Base not found within tenant scope",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ErrorResponse" }
+              }
+            }
+          },
           "409": {
             "description": "Precondition failed: authoritative delta replay buffer lag > 0, write fence not drained, or OCC conflict",
             "content": {
@@ -380,6 +420,14 @@ The `rag-kb-catalog-service` runs an HTTP server (default port `8080`) serving O
             "content": {
               "application/json": {
                 "schema": { "$ref": "#/components/schemas/KBResponse" }
+              }
+            }
+          },
+          "404": {
+            "description": "Knowledge Base not found within tenant scope",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ErrorResponse" }
               }
             }
           },
@@ -799,6 +847,12 @@ message KBResponse {
 - Enforces standardized key-value namespace syntax (`namespace:key=value` or `namespace:value`, e.g., `env:production`, `compliance:hipaa`, `domain:finance`).
 - Rejects malformed tokens, empty namespaces, or unescaped control characters.
 
+### D. Coarse RBAC Permission Matrix (`internal/domain/policy/access_evaluator.go`)
+- **Read Operations (`GetKnowledgeBase`, `ListKnowledgeBases`)**: Allowed for `Owner`, `Editor`, `Viewer`, `Auditor`.
+- **Standard Mutation Operations (`CreateKnowledgeBase`, `UpdateKnowledgeBase`, `TriggerReindexing`)**: Allowed for `Owner`, `Editor`.
+- **Cutover & Destructive Operations (`PromoteIndexPointer`, `AbortReindexing`, `DeleteKnowledgeBase`)**: Allowed for `Owner`, `Editor` (`Viewer` and `Auditor` rejected with `ErrInsufficientPermissions` -> HTTP `403 Forbidden` / gRPC `codes.PermissionDenied`).
+- **Tenant Spoofing Defense**: `tenant_id` is extracted exclusively from verified JWT/context claims (`sub` mapped to canonical `user_id`). If a gRPC request specifies a non-empty `req.GetTenantId()` that differs from the verified context `tenant_id`, the interceptor/server rejects the request with `ErrTenantMismatch` (`codes.PermissionDenied`).
+
 ---
 
 ## 4. PostgreSQL 16 & Redis 7.2 Persistence Contracts
@@ -851,6 +905,7 @@ CREATE TABLE IF NOT EXISTS kb_migrations (
 );
 
 CREATE INDEX IF NOT EXISTS idx_kb_migrations_active ON kb_migrations (tenant_id, kb_id, state);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_kb_migrations_one_active ON kb_migrations (tenant_id, kb_id) WHERE state = 'REINDEXING';
 
 -- 3. Transactional CDC Outbox Table (Tailed via PostgreSQL WAL by Debezium)
 CREATE TABLE IF NOT EXISTS outbox_events (
@@ -881,7 +936,7 @@ CREATE TABLE IF NOT EXISTS idempotency_keys (
 );
 ```
 
-- **Optimistic Concurrency Control (OCC) Update Pattern (ADR-004)**:
+- **Optimistic Concurrency Control (OCC) Update Pattern & Disambiguation (ADR-004)**:
   ```sql
   UPDATE knowledge_bases
   SET name = $4,
@@ -896,7 +951,10 @@ CREATE TABLE IF NOT EXISTS idempotency_keys (
     AND state != 'TOMBSTONED'
   RETURNING version, updated_at;
   ```
-  If `RowsAffected() == 0`, the repository returns `ErrVersionConflict` (mapped to HTTP `409 Conflict` / gRPC `codes.Aborted` and incrementing `kb_catalog_optimistic_conflicts_total`).
+  To prevent `404` or invalid-state errors from falsely inflating `kb_catalog_optimistic_conflicts_total` (Production Alert Rule 1), repository mutations load or disambiguate the target `(tenant_id, kb_id)` within the transaction:
+  - Missing or `TOMBSTONED` row -> `ErrKnowledgeBaseNotFound` (HTTP `404 Not Found` / gRPC `codes.NotFound`).
+  - Disallowed lifecycle state transition -> `ErrInvalidStateTransition` (HTTP `409 Conflict` / gRPC `codes.FailedPrecondition`).
+  - Existing active row where `actual_version != expected_version` (or `RowsAffected() == 0` on concurrent update race) -> `ErrVersionConflict` (HTTP `409 Conflict` / gRPC `codes.Aborted`), which exclusively increments `kb_catalog_optimistic_conflicts_total`.
 
 ### B. Redis 7.2 Cluster Versioned Key Contract (ADR-003)
 - **Key Format & CRC16 Hash-Tag Co-Location**:

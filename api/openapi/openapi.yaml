@@ -99,6 +99,12 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
+        "409":
+          description: Duplicate Knowledge Base name within tenant or Idempotency-Key payload hash conflict
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
     get:
       summary: List Knowledge Bases
       operationId: listKnowledgeBases
@@ -184,6 +190,12 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/KBResponse"
+        "404":
+          description: Knowledge Base not found within tenant scope
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
         "409":
           description: Optimistic concurrency version conflict
           content:
@@ -212,6 +224,12 @@ paths:
       responses:
         "204":
           description: Knowledge Base tombstoned and purge event written to outbox
+        "404":
+          description: Knowledge Base not found within tenant scope
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
         "409":
           description: Optimistic concurrency version conflict
           content:
@@ -239,6 +257,12 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/MigrationResponse"
+        "404":
+          description: Knowledge Base not found within tenant scope
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
         "409":
           description: Migration already in progress or version mismatch
           content:
@@ -266,6 +290,12 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/KBResponse"
+        "404":
+          description: Knowledge Base not found within tenant scope
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
         "409":
           description: "Precondition failed: authoritative delta replay buffer lag > 0, write fence not drained, or OCC conflict"
           content:
@@ -293,6 +323,12 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/KBResponse"
+        "404":
+          description: Knowledge Base not found within tenant scope
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
         "409":
           description: Migration not in REINDEXING state or version mismatch
           content:
