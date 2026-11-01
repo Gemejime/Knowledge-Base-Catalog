@@ -153,6 +153,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           persist-credentials: false
+          fetch-depth: 0
 
       - name: Verify Core AI Context & Documentation Existence
         run: |
@@ -167,14 +168,15 @@ jobs:
             ".ai/ai-workflow-rules.md"
             ".ai/agents.md"
             ".ai/progress-tracker.md"
+            "api/openapi/openapi.yaml"
           )
           for file in "${REQUIRED_FILES[@]}"; do
             if [ ! -f "$file" ]; then
-              echo "::error::Missing required documentation or AI context file: $file"
+              echo "::error::Missing required documentation, OpenAPI 3.1 spec, or AI context file: $file"
               exit 1
             fi
           done
-          echo "All required .ai context files and GEMINI.MD are present."
+          echo "All required .ai context files, GEMINI.MD, and api/openapi/openapi.yaml are present."
 
       - name: Validate Doc API & OpenAPI 3.1 Contract Specification
         run: |
@@ -189,27 +191,36 @@ jobs:
           grep -q "PromoteIndexPointer" .ai/doc-api.md || { echo "::error::.ai/doc-api.md must document PromoteIndexPointer RPC"; exit 1; }
           grep -q "AbortReindexing" .ai/doc-api.md || { echo "::error::.ai/doc-api.md must document AbortReindexing RPC"; exit 1; }
 
-          if [ -f "api/openapi/openapi.yaml" ]; then
-            echo "Validating api/openapi/openapi.yaml..."
-            python3 -c '
+          echo "Validating api/openapi/openapi.yaml..."
+          python3 -c '
           import sys, yaml
           with open("api/openapi/openapi.yaml", "r", encoding="utf-8") as f:
               spec = yaml.safe_load(f)
           assert str(spec.get("openapi", "")).startswith("3.1"), "OpenAPI version must be 3.1.x"
           paths = spec.get("paths", {})
           assert "/healthz" in paths, "Missing /healthz in openapi.yaml"
+          assert "/ready" in paths, "Missing /ready in openapi.yaml"
+          assert "/v1/knowledge-bases" in paths, "Missing /v1/knowledge-bases in openapi.yaml"
+          assert "/v1/knowledge-bases/{kb_id}" in paths, "Missing /v1/knowledge-bases/{kb_id} in openapi.yaml"
+          components = spec.get("components", {})
+          assert "bearerAuth" in components.get("securitySchemes", {}), "Missing bearerAuth securityScheme in openapi.yaml"
+          assert "KnowledgeBase" in components.get("schemas", {}), "Missing KnowledgeBase schema in openapi.yaml"
           print("api/openapi/openapi.yaml is valid OpenAPI 3.1!")
           '
-          fi
 
       - name: Enforce Continuous Doc API Synchronization on Code Modifications
         if: github.event_name == 'pull_request'
         run: |
-          git fetch origin ${{ github.base_ref }} --depth=1
-          CHANGED_CODE=$(git diff --name-only origin/${{ github.base_ref }}...HEAD -- 'cmd/**' 'internal/**' 'api/proto/**' || true)
-          CHANGED_DOCS=$(git diff --name-only origin/${{ github.base_ref }}...HEAD -- '.ai/doc-api.md' 'api/openapi/**' || true)
-          if [ -n "$CHANGED_CODE" ] && [ -z "$CHANGED_DOCS" ]; then
-            echo "::warning::Code or Protobuf contracts were modified without updating .ai/doc-api.md or api/openapi/openapi.yaml. Verify whether Doc API updates are required."
+          git fetch origin "${{ github.base_ref }}"
+          MERGE_BASE=$(git merge-base "origin/${{ github.base_ref }}" HEAD)
+          CHANGED_CODE=$(git diff --name-only "$MERGE_BASE...HEAD" -- 'cmd/**' 'internal/**' 'api/proto/**')
+          CHANGED_DOC_API=$(git diff --name-only "$MERGE_BASE...HEAD" -- '.ai/doc-api.md')
+          CHANGED_OPENAPI=$(git diff --name-only "$MERGE_BASE...HEAD" -- 'api/openapi/openapi.yaml')
+          if [ -n "$CHANGED_CODE" ]; then
+            if [ -z "$CHANGED_DOC_API" ] || [ -z "$CHANGED_OPENAPI" ]; then
+              echo "::error::Code or Protobuf contracts were modified without updating BOTH .ai/doc-api.md and api/openapi/openapi.yaml."
+              exit 1
+            fi
           fi
 
   # ---------------------------------------------------------------------------

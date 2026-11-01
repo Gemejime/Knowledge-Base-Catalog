@@ -56,7 +56,7 @@
 
 ## 5. Continuous Doc API & OpenAPI Maintenance
 
-- **Mandatory Synchronization**: Whenever any HTTP route, gRPC RPC, Protobuf message, domain error mapping, or persistence schema is created or modified—no matter how small—both [`.ai/doc-api.md`](.ai/doc-api.md) and `api/openapi/openapi.yaml` (served at `/docs`, `/redoc`, `/api/docs`, `/openapi.json`) **MUST** be updated in the same working step.
+- **Mandatory Synchronization**: Whenever any HTTP route, gRPC RPC, Protobuf message, domain error mapping, query parameter, or persistence/cache schema is created or modified—no matter how small—both [`doc-api.md`](doc-api.md) and `api/openapi/openapi.yaml` (served at `/docs`, `/redoc`, `/api/docs`, `/openapi.json`) **MUST** be updated in the same working step.
 
 ---
 
