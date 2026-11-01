@@ -452,6 +452,24 @@ The `rag-kb-catalog-service` runs an HTTP server (default port `8080`) serving O
         "description": "Verified JWT bearer token. Edge Gateway extracts tenant_id, sub (mapped to canonical user_id), and roles into verified request context."
       }
     },
+    "responses": {
+      "Unauthorized": {
+        "description": "Missing or invalid authentication credentials",
+        "content": {
+          "application/json": {
+            "schema": { "$ref": "#/components/schemas/ErrorResponse" }
+          }
+        }
+      },
+      "Forbidden": {
+        "description": "Insufficient RBAC permissions or tenant mismatch",
+        "content": {
+          "application/json": {
+            "schema": { "$ref": "#/components/schemas/ErrorResponse" }
+          }
+        }
+      }
+    },
     "parameters": {
       "KBIdPathParam": {
         "name": "kb_id",
@@ -508,7 +526,7 @@ The `rag-kb-catalog-service` runs an HTTP server (default port `8080`) serving O
           "kb_id": { "type": "string", "format": "uuid" },
           "name": { "type": "string" },
           "description": { "type": "string" },
-          "version": { "type": "integer", "minimum": 1 },
+          "version": { "type": "string", "format": "uint64", "pattern": "^[1-9][0-9]*$" },
           "state": { "$ref": "#/components/schemas/LifecycleState" },
           "routing_policy": { "$ref": "#/components/schemas/RoutingPolicy" },
           "active_index_pointer": { "type": "string" },
@@ -558,7 +576,7 @@ The `rag-kb-catalog-service` runs an HTTP server (default port `8080`) serving O
         "type": "object",
         "description": "Partial metadata update guarded by expected_version. Use update_mask to distinguish omitted taxonomy_tags (preserves existing tags) from an explicit empty array [] (clears all tags).",
         "properties": {
-          "expected_version": { "type": "integer", "minimum": 1 },
+          "expected_version": { "type": "string", "format": "uint64", "pattern": "^[1-9][0-9]*$" },
           "name": { "type": "string" },
           "description": { "type": "string" },
           "retrieval_profile": { "$ref": "#/components/schemas/RetrievalProfile" },
@@ -586,7 +604,7 @@ The `rag-kb-catalog-service` runs an HTTP server (default port `8080`) serving O
       "TriggerReindexingRequest": {
         "type": "object",
         "properties": {
-          "expected_version": { "type": "integer", "minimum": 1 },
+          "expected_version": { "type": "string", "format": "uint64", "pattern": "^[1-9][0-9]*$" },
           "target_blue_schema": { "$ref": "#/components/schemas/VectorSchema" }
         },
         "required": ["expected_version", "target_blue_schema"]
@@ -600,7 +618,7 @@ The `rag-kb-catalog-service` runs an HTTP server (default port `8080`) serving O
           "state": { "$ref": "#/components/schemas/LifecycleState" },
           "routing_policy": { "$ref": "#/components/schemas/RoutingPolicy" },
           "candidate_index_pointer": { "type": "string" },
-          "version": { "type": "integer", "minimum": 1 }
+          "version": { "type": "string", "format": "uint64", "pattern": "^[1-9][0-9]*$" }
         },
         "required": [
           "tenant_id",
@@ -615,10 +633,11 @@ The `rag-kb-catalog-service` runs an HTTP server (default port `8080`) serving O
       "PromotePointerRequest": {
         "type": "object",
         "properties": {
-          "expected_version": { "type": "integer", "minimum": 1 },
+          "expected_version": { "type": "string", "format": "uint64", "pattern": "^[1-9][0-9]*$" },
           "verified_delta_lag_records": {
-            "type": "integer",
-            "minimum": 0,
+            "type": "string",
+            "format": "uint64",
+            "pattern": "^[0-9]+$",
             "description": "Optional client-observed delta lag assertion checked against the server's authoritative migration lag (kb_migrations.delta_lag_records)."
           }
         },
@@ -627,7 +646,7 @@ The `rag-kb-catalog-service` runs an HTTP server (default port `8080`) serving O
       "AbortReindexingRequest": {
         "type": "object",
         "properties": {
-          "expected_version": { "type": "integer", "minimum": 1 },
+          "expected_version": { "type": "string", "format": "uint64", "pattern": "^[1-9][0-9]*$" },
           "reason": { "type": "string" }
         },
         "required": ["expected_version", "reason"]
@@ -670,7 +689,7 @@ service CatalogService {
   rpc DeleteKnowledgeBase(DeleteKBRequest) returns (google.protobuf.Empty);
   rpc TriggerReindexing(TriggerReindexingRequest) returns (MigrationResponse);
   rpc PromoteIndexPointer(PromotePointerRequest) returns (KBResponse);
-  rpc AbortReindexing(AbortReindexingRequest) returns (google.protobuf.Empty);
+  rpc AbortReindexing(AbortReindexingRequest) returns (KBResponse);
 }
 ```
 

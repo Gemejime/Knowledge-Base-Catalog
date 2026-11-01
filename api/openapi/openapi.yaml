@@ -93,12 +93,10 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
         "403":
-          description: Insufficient RBAC permissions
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponse"
+          $ref: "#/components/responses/Forbidden"
         "409":
           description: Duplicate Knowledge Base name within tenant or Idempotency-Key payload hash conflict
           content:
@@ -141,6 +139,10 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ListKBsResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
   /v1/knowledge-bases/{kb_id}:
     parameters:
       - $ref: "#/components/parameters/KBIdPathParam"
@@ -166,6 +168,10 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/KBResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
         "404":
           description: Knowledge Base not found within tenant scope
           content:
@@ -190,6 +196,10 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/KBResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
         "404":
           description: Knowledge Base not found within tenant scope
           content:
@@ -224,6 +234,10 @@ paths:
       responses:
         "204":
           description: Knowledge Base tombstoned and purge event written to outbox
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
         "404":
           description: Knowledge Base not found within tenant scope
           content:
@@ -257,6 +271,10 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/MigrationResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
         "404":
           description: Knowledge Base not found within tenant scope
           content:
@@ -290,6 +308,10 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/KBResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
         "404":
           description: Knowledge Base not found within tenant scope
           content:
@@ -323,6 +345,10 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/KBResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
         "404":
           description: Knowledge Base not found within tenant scope
           content:
@@ -344,6 +370,19 @@ components:
       description: >-
         Verified JWT bearer token. Edge Gateway extracts tenant_id, sub (mapped
         to canonical user_id), and roles into verified request context.
+  responses:
+    Unauthorized:
+      description: Missing or invalid authentication credentials
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+    Forbidden:
+      description: Insufficient RBAC permissions or tenant mismatch
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
   parameters:
     KBIdPathParam:
       name: kb_id
@@ -438,8 +477,10 @@ components:
         description:
           type: string
         version:
-          type: integer
-          minimum: 1
+          type: string
+          format: uint64
+          pattern: "^[1-9][0-9]*$"
+          example: "1"
         state:
           $ref: "#/components/schemas/LifecycleState"
         routing_policy:
@@ -514,8 +555,10 @@ components:
         array [] (clears all tags).
       properties:
         expected_version:
-          type: integer
-          minimum: 1
+          type: string
+          format: uint64
+          pattern: "^[1-9][0-9]*$"
+          example: "1"
         name:
           type: string
         description:
@@ -554,8 +597,10 @@ components:
       type: object
       properties:
         expected_version:
-          type: integer
-          minimum: 1
+          type: string
+          format: uint64
+          pattern: "^[1-9][0-9]*$"
+          example: "1"
         target_blue_schema:
           $ref: "#/components/schemas/VectorSchema"
       required:
@@ -579,8 +624,10 @@ components:
         candidate_index_pointer:
           type: string
         version:
-          type: integer
-          minimum: 1
+          type: string
+          format: uint64
+          pattern: "^[1-9][0-9]*$"
+          example: "1"
       required:
         - tenant_id
         - kb_id
@@ -593,11 +640,15 @@ components:
       type: object
       properties:
         expected_version:
-          type: integer
-          minimum: 1
+          type: string
+          format: uint64
+          pattern: "^[1-9][0-9]*$"
+          example: "1"
         verified_delta_lag_records:
-          type: integer
-          minimum: 0
+          type: string
+          format: uint64
+          pattern: "^[0-9]+$"
+          example: "0"
           description: >-
             Optional client-observed delta lag assertion compared against the
             server's authoritative migration lag (kb_migrations.delta_lag_records).
@@ -609,8 +660,10 @@ components:
       type: object
       properties:
         expected_version:
-          type: integer
-          minimum: 1
+          type: string
+          format: uint64
+          pattern: "^[1-9][0-9]*$"
+          example: "1"
         reason:
           type: string
       required:

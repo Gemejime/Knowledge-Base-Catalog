@@ -16,6 +16,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"google.golang.org/grpc"
@@ -43,10 +44,13 @@ const testJWTSecret = "unit-test-hmac-secret-key-2026"
 func makeTestJWT(t *testing.T, tenantID, sub string, roles []string) string {
 	t.Helper()
 	header := base64.RawURLEncoding.EncodeToString([]byte(`{"alg":"HS256","typ":"JWT"}`))
+	now := time.Now().UTC().Unix()
 	claimsMap := map[string]any{
 		"tenant_id": tenantID,
 		"sub":       sub,
 		"roles":     roles,
+		"exp":       now + 3600,
+		"nbf":       now - 10,
 	}
 	claimsBytes, err := json.Marshal(claimsMap)
 	if err != nil {
@@ -74,7 +78,7 @@ func newTestHarness(t *testing.T) *testHarness {
 	logger := observability.NewJSONLogger(logBuf, slog.LevelDebug)
 	metrics := observability.NewMetrics(nil)
 	repo := postgres.NewInMemoryCatalogRepo(metrics)
-	trigger := workflow.NewNoopIngestionTrigger()
+	trigger := workflow.NewDeterministicIngestionTrigger()
 
 	createCmd := command.NewCreateKnowledgeBaseCommand(repo, nil)
 	updateCmd := command.NewUpdateKnowledgeBaseCommand(repo, nil)
@@ -181,8 +185,10 @@ func TestHTTPProbesDocAPIAndFullLifecycle(t *testing.T) {
 	h := newTestHarness(t)
 	defer h.cleanup()
 
-	// 1. Probes & Doc API endpoints (/healthz, /ready, /docs, /redoc, /openapi.json, /api/docs, /metrics)
-	for _, ep := range []string{"/healthz", "/ready", "/docs", "/redoc", "/openapi.json", "/api/docs", "/metrics"} {
+	token := makeTestJWT(t, "tenant-enterprise", "user-admin-1", []string{"Owner"})
+
+	// 1. Probes & Doc API endpoints (/healthz, /ready, /docs, /redoc, /openapi.json, /api/docs)
+	for _, ep := range []string{"/healthz", "/ready", "/docs", "/redoc", "/openapi.json", "/api/docs"} {
 		resp, err := http.Get(h.httpServer.URL + ep)
 		if err != nil {
 			t.Fatalf("GET %s failed: %v", ep, err)
@@ -193,7 +199,17 @@ func TestHTTPProbesDocAPIAndFullLifecycle(t *testing.T) {
 		}
 	}
 
-	token := makeTestJWT(t, "tenant-enterprise", "user-admin-1", []string{"Owner"})
+	// 1b. /metrics is protected with authentication on public router
+	reqMetrics, _ := http.NewRequest(http.MethodGet, h.httpServer.URL+"/metrics", nil)
+	reqMetrics.Header.Set("Authorization", "Bearer "+token)
+	respMetrics, err := http.DefaultClient.Do(reqMetrics)
+	if err != nil {
+		t.Fatalf("GET /metrics failed: %v", err)
+	}
+	_ = respMetrics.Body.Close()
+	if respMetrics.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200 OK from authenticated /metrics, got %d", respMetrics.StatusCode)
+	}
 
 	// 2. Create Knowledge Base with Idempotency-Key
 	createBody := `{
@@ -247,6 +263,13 @@ func TestHTTPProbesDocAPIAndFullLifecycle(t *testing.T) {
 	defer respReplay.Body.Close()
 	if respReplay.StatusCode != http.StatusCreated {
 		t.Fatalf("expected 201 Created on idempotent replay, got %d", respReplay.StatusCode)
+	}
+	var replayed dto.KBResponse
+	if err := json.NewDecoder(respReplay.Body).Decode(&replayed); err != nil {
+		t.Fatalf("failed to decode replay response: %v", err)
+	}
+	if replayed.KnowledgeBase == nil || replayed.KnowledgeBase.KBID != kbID {
+		t.Fatalf("expected replayed KBID %q, got %+v", kbID, replayed.KnowledgeBase)
 	}
 
 	// 4. Attempting in-place vector schema mutation via PATCH returns 422 Unprocessable Entity
@@ -306,11 +329,14 @@ func TestHTTPProbesDocAPIAndFullLifecycle(t *testing.T) {
 		t.Fatalf("expected 409 Conflict when delta_lag_records=50, got %d", promRespLag.StatusCode)
 	}
 
-	// 7. Drain authoritative delta lag to 0 -> :promotePointer succeeds (200 OK)
+	// 7. Drain authoritative delta lag to 0 and satisfy backfill + write fence -> :promotePointer succeeds (200 OK)
 	if err := h.repo.SetMigrationDeltaLag("tenant-enterprise", kbID, 0); err != nil {
 		t.Fatalf("SetMigrationDeltaLag(0) failed: %v", err)
 	}
-	promReqOK, _ := http.NewRequest(http.MethodPost, h.httpServer.URL+"/v1/knowledge-bases/"+kbID+":promotePointer", strings.NewReader(`{"expected_version": 2, "verified_delta_lag_records": 0}`))
+	if err := h.repo.SetActiveMigrationBackfillAndFence("tenant-enterprise", kbID, true, true); err != nil {
+		t.Fatalf("SetActiveMigrationBackfillAndFence failed: %v", err)
+	}
+	promReqOK, _ := http.NewRequest(http.MethodPost, h.httpServer.URL+"/v1/knowledge-bases/"+kbID+":promotePointer", strings.NewReader(`{"expected_version": "2", "verified_delta_lag_records": "0"}`))
 	promReqOK.Header.Set("Authorization", "Bearer "+token)
 	promRespOK, err := http.DefaultClient.Do(promReqOK)
 	if err != nil {

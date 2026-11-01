@@ -58,7 +58,7 @@ Aligned with the committed specifications in [`../.ai/`](../.ai/) (and the local
 
 ### Layer 3: Architecture & Scale
 13. **Asynchronous Task Queues, Workflows & CDC (`internal/infrastructure/temporal/client.go`)**:
-    - Heavy backfill and compaction jobs are never executed in-process; the catalog service uses the Temporal Go SDK client solely to trigger asynchronous backfill DAGs in `rag-ingestion-coordinator` and writes outbox events streamed asynchronously by Debezium to Apache Kafka.
+    - Heavy backfill and compaction jobs are never executed in-process; the catalog service commits the `REINDEXING` and `DUAL_WRITE` state and transactional outbox event to PostgreSQL before starting `TriggerBackfillDAG`. The workflow is triggered through a durable post-commit mechanism with retry and idempotency, and cache publication ensures it cannot read stale `GREEN_ONLY` routing. Outbox events are streamed asynchronously by Debezium to Apache Kafka.
 14. **High Availability & Redundancy (`deployments/helm/`)**:
     - Stateless Go replicas deployed with Kubernetes `PodDisruptionBudget` (`minAvailable: 2`), multi-AZ pod anti-affinity rules, and zero-downtime rolling updates.
 15. **Creational Design Patterns & Memory Pooling**:

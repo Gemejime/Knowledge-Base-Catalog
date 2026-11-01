@@ -31,7 +31,7 @@ type CatalogServiceClient interface {
 	DeleteKnowledgeBase(ctx context.Context, in *DeleteKBRequest, opts ...grpc.CallOption) (*emptypb.Empty, error)
 	TriggerReindexing(ctx context.Context, in *TriggerReindexingRequest, opts ...grpc.CallOption) (*MigrationResponse, error)
 	PromoteIndexPointer(ctx context.Context, in *PromotePointerRequest, opts ...grpc.CallOption) (*KBResponse, error)
-	AbortReindexing(ctx context.Context, in *AbortReindexingRequest, opts ...grpc.CallOption) (*emptypb.Empty, error)
+	AbortReindexing(ctx context.Context, in *AbortReindexingRequest, opts ...grpc.CallOption) (*KBResponse, error)
 }
 
 type catalogServiceClient struct {
@@ -106,8 +106,8 @@ func (c *catalogServiceClient) PromoteIndexPointer(ctx context.Context, in *Prom
 	return out, nil
 }
 
-func (c *catalogServiceClient) AbortReindexing(ctx context.Context, in *AbortReindexingRequest, opts ...grpc.CallOption) (*emptypb.Empty, error) {
-	out := new(emptypb.Empty)
+func (c *catalogServiceClient) AbortReindexing(ctx context.Context, in *AbortReindexingRequest, opts ...grpc.CallOption) (*KBResponse, error) {
+	out := new(KBResponse)
 	err := c.cc.Invoke(ctx, CatalogService_AbortReindexing_FullMethodName, in, out, opts...)
 	if err != nil {
 		return nil, err
@@ -124,7 +124,7 @@ type CatalogServiceServer interface {
 	DeleteKnowledgeBase(context.Context, *DeleteKBRequest) (*emptypb.Empty, error)
 	TriggerReindexing(context.Context, *TriggerReindexingRequest) (*MigrationResponse, error)
 	PromoteIndexPointer(context.Context, *PromotePointerRequest) (*KBResponse, error)
-	AbortReindexing(context.Context, *AbortReindexingRequest) (*emptypb.Empty, error)
+	AbortReindexing(context.Context, *AbortReindexingRequest) (*KBResponse, error)
 	mustEmbedUnimplementedCatalogServiceServer()
 }
 
@@ -152,7 +152,7 @@ func (UnimplementedCatalogServiceServer) TriggerReindexing(context.Context, *Tri
 func (UnimplementedCatalogServiceServer) PromoteIndexPointer(context.Context, *PromotePointerRequest) (*KBResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method PromoteIndexPointer not implemented")
 }
-func (UnimplementedCatalogServiceServer) AbortReindexing(context.Context, *AbortReindexingRequest) (*emptypb.Empty, error) {
+func (UnimplementedCatalogServiceServer) AbortReindexing(context.Context, *AbortReindexingRequest) (*KBResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method AbortReindexing not implemented")
 }
 func (UnimplementedCatalogServiceServer) mustEmbedUnimplementedCatalogServiceServer() {}

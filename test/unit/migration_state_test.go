@@ -92,12 +92,24 @@ func TestKnowledgeBaseAggregateBlueGreenLifecycle(t *testing.T) {
 	}
 
 	// 2. Attempt PromotePointer with authoritative lag = 50 -> blocked with ErrDeltaLagNotZero
+	mig.BackfillCompleted = true
+	mig.WriteFenceDrained = true
 	err = kb.PromotePointer(mig, 2, 50, nil, now.Add(2*time.Minute))
 	if !errors.Is(err, entity.ErrDeltaLagNotZero) {
 		t.Fatalf("expected ErrDeltaLagNotZero when authoritative lag=50, got %v", err)
 	}
 
-	// 3. PromotePointer with authoritative lag = 0 -> switches to Blue pointer and settles at ACTIVE
+	// 2b. Attempt PromotePointer with zero lag but incomplete backfill/fence -> blocked
+	mig.BackfillCompleted = false
+	zeroLagVal := uint64(0)
+	err = kb.PromotePointer(mig, 2, 0, &zeroLagVal, now.Add(2*time.Minute))
+	if !errors.Is(err, entity.ErrDeltaLagNotZero) {
+		t.Fatalf("expected ErrDeltaLagNotZero when backfill incomplete, got %v", err)
+	}
+	mig.BackfillCompleted = true
+	mig.WriteFenceDrained = true
+
+	// 3. PromotePointer with authoritative lag = 0, backfill completed, write fence drained -> switches to Blue pointer and settles at ACTIVE
 	zeroLag := uint64(0)
 	if err := kb.PromotePointer(mig, 2, 0, &zeroLag, now.Add(3*time.Minute)); err != nil {
 		t.Fatalf("PromotePointer with lag=0 failed: %v", err)

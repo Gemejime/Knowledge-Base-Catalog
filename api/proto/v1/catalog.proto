@@ -15,6 +15,6 @@ service CatalogService {
   rpc DeleteKnowledgeBase(DeleteKBRequest) returns (google.protobuf.Empty);
   rpc TriggerReindexing(TriggerReindexingRequest) returns (MigrationResponse);
   rpc PromoteIndexPointer(PromotePointerRequest) returns (KBResponse);
-  rpc AbortReindexing(AbortReindexingRequest) returns (google.protobuf.Empty);
+  rpc AbortReindexing(AbortReindexingRequest) returns (KBResponse);
 }
 

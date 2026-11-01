@@ -9,7 +9,7 @@ To satisfy the full OpenAPI 3.1 (`api/openapi/openapi.yaml`) and Protobuf v3 (`a
 - **Full Phase 1 Production Implementation**: PostgreSQL 16 DDL & migrations, PgBouncer `default_query_exec_mode = exec` connection pooling, Optimistic Concurrency Control (`version = version + 1`), transactional outbox writes (`outbox_events`), idempotency key deduplication (`idempotency_keys`), pure hexagonal domain layer (aggregate root, vector schema immutability guard, static model registry, Blue-Green migration state machine, hierarchical taxonomy parser, coarse RBAC evaluator), application commands/queries, gRPC server + interceptors, and OpenAPI 3.1 HTTP server + middlewares + operational probes.
 - **Clean Hexagonal Ports for Phase 2 (Redis Cluster) & Phase 3 (Temporal)**:
   - `get_knowledge_base.go` accepts an optional `VersionedCache` port interface; when nil or unconfigured in Phase 1 (prior to Phase 2's `internal/infrastructure/cache/redis/cluster_client.go`), reads resolve directly against PostgreSQL with full `min_version` validation.
-  - `GET /ready` evaluates active PostgreSQL pool connectivity (`pool.Ping(ctx)`) and an injectable `RedisHealthChecker` function (returning `{"status": "ready", "postgres": "connected", "redis_cluster": "connected"}` when healthy or when Redis is in Phase 1 bypass/noop mode, and HTTP `503 Service Unavailable` when unhealthy).
+  - `GET /ready` evaluates active PostgreSQL pool connectivity (`pool.Ping(ctx)`) and an injectable `RedisHealthChecker` function (returning `{"status": "ready", "postgres": "connected", "redis_cluster": "connected"}` when Redis is healthy, `{"status": "ready", "postgres": "connected", "redis_cluster": "disabled"}` or omitted when Redis is in Phase 1 bypass/noop mode, and HTTP `503 Service Unavailable` when PostgreSQL is unreachable).
   - `internal/application/workflow/ingestion_trigger.go` defines the `IngestionTrigger` port interface alongside a deterministic no-op/in-memory Phase 1 adapter wired in `cmd/catalog-service/main.go` so `TriggerReindexing` executes safely without nil-pointer panics prior to Phase 3's Temporal SDK adapter (`internal/infrastructure/temporal/client.go`).
 
 ---
@@ -83,7 +83,7 @@ Create deterministic SQL migrations (`000001_init_catalog_schema.up.sql` and `00
    - `pgxpool` connection pool enforcing `config.ConnConfig.DefaultQueryExecMode = pgx.QueryExecModeExec` (`default_query_exec_mode = exec`) for PgBouncer transaction-pooling compatibility (`ADR-004`).
 2. **`internal/infrastructure/persistence/postgres/catalog_repo.go` (`F-04`)**:
    - Enforces `tenant_id` isolation on every SQL statement.
-   - **Strict OCC Disambiguation (`F-04`)**: Inside every mutation transaction (`pgx.Tx`), inspects the current row (`SELECT ... FROM knowledge_bases WHERE tenant_id = $1 AND kb_id = $2 FOR NO KEY UPDATE` or pre-check + conditional `UPDATE ... WHERE tenant_id = $1 AND kb_id = $2 AND version = $3 AND state != 'TOMBSTONED'`) so that:
+   - **Strict OCC Disambiguation (`F-04`)**: Inside every mutation transaction (`pgx.Tx`), inspects the current row under lock (`SELECT ... FROM knowledge_bases WHERE tenant_id = $1 AND kb_id = $2 FOR NO KEY UPDATE` or re-reading under `FOR NO KEY UPDATE` after a conditional update affects zero rows) so that:
      - Missing or `TOMBSTONED` KB returns `ErrKnowledgeBaseNotFound` (`404 Not Found` / gRPC `NotFound`).
      - Invalid lifecycle state returns `ErrInvalidStateTransition` (`409 Conflict` / gRPC `FailedPrecondition`).
      - Version mismatch (`actual_version != expected_version` or `RowsAffected() == 0` on concurrent modification) returns `ErrVersionConflict` (`409 Conflict` / gRPC `Aborted`) and **exclusively** increments `kb_catalog_optimistic_conflicts_total`.
@@ -193,5 +193,5 @@ Create deterministic SQL migrations (`000001_init_catalog_schema.up.sql` and `00
 4. Verify zero forbidden imports in `internal/domain/` (`grep -rnE 'github\.com/jackc/pgx|github\.com/redis/go-redis|go\.temporal\.io|google\.golang\.org/grpc|net/http' internal/domain/`)
 5. Audit secured logging (`log/slog` JSON, redaction of credentials/tokens, zero raw `fmt.Print*`/`log.Print*`) and PgBouncer `QueryExecModeExec`
 6. Validate `api/openapi/openapi.yaml` and `.ai/doc-api.md` synchronization
-7. Run unit and transport test suites with race detection: `go test -v -race ./internal/... ./test/unit/...`
+7. Run unit, integration, and chaos test suites with race detection: `go test -v -race ./internal/... ./test/unit/... ./test/integration/... ./test/chaos/...` (or `./...`)
 8. Update `.ai/progress-tracker.md` and verify at least two conventional git commits
