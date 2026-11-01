@@ -2,11 +2,11 @@
 
 ## Current Phase
 
-- **Phase 0 / Phase 1 Bootstrap: Context Architecture, CI/CD Governance & Repository Foundation** (🟢 Completed)
+- **Phase 1: Core Schemas & Concurrency Controls** (🟢 Completed)
 
 ## Current Goal
 
-- Establish `.gitignore` (excluding `tasks/`), GitHub Actions CI/CD workflow (`.github/workflows/ci.yml`), `.ai/` & `.ai.md` architectural context aligned with `RAG KB Catalog Service Implementation Plan.pdf` and `Production Grade Backend Concepts.pdf`, and `GEMINI.MD` master agent directive. Ready to begin **Phase 1: Core Schemas & Concurrency Controls**.
+- Completed **Phase 1 (Weeks 1–2): Core Schemas & Concurrency Controls** (`000001_init_catalog_schema.up.sql`/`.down.sql`, pure hexagonal domain layer `internal/domain/`, application command/query use cases `internal/application/`, PgBouncer `QueryExecModeExec` PostgreSQL repository & transactional outbox `internal/infrastructure/`, OpenAPI 3.1 HTTP & Protobuf v3 gRPC transport layers `internal/transport/`, and unit/concurrency test suites `test/unit/`). Ready to begin **Phase 2: Read Plane & Versioned Redis Caching**.
 
 ---
 
@@ -14,8 +14,8 @@
 
 | Phase | Duration | Core Domain Focus | Deliverables & Milestone Exit Criteria | Status |
 | :--- | :--- | :--- | :--- | :--- |
-| **Phase 1: Core Schemas & Concurrency Controls** | Weeks 1–2 | Relational Schemas & Optimistic Locking | • PostgreSQL 16 schema with strict `tenant_id` isolation, monotonic integer `version` columns, and `outbox_events` tables.<br>• Domain models enforcing immutable vector schema rules (`ErrStructuralMutationDisallowed`).<br>• gRPC (`catalog.proto`, `types.proto`) and OpenAPI 3.1 REST endpoints (`openapi.yaml`, `/docs`) with PgBouncer-compatible connection configuration (`default_query_exec_mode = exec`). | 🟡 Ready to Start |
-| **Phase 2: Read Plane & Versioned Redis Caching** | Weeks 3–4 | Direct Cache Architecture & Taxonomy | • Direct Redis 7.2 Cluster cache reads using monotonic versioned keys (`kb:{tenant_id}:{id}:v{version}`) with 1-hour safety TTL and zero L1 invalidation buses.<br>• Hierarchical key-value taxonomy parser (`namespace:key=value`) supporting query federation.<br>• Unit and Testcontainers integration suites (PostgreSQL + Redis Cluster) verifying zero cache drift across updates. | ⚪ Planned |
+| **Phase 1: Core Schemas & Concurrency Controls** | Weeks 1–2 | Relational Schemas & Optimistic Locking | • PostgreSQL 16 schema with strict `tenant_id` isolation, monotonic integer `version` columns, and `outbox_events` tables.<br>• Domain models enforcing immutable vector schema rules (`ErrStructuralMutationDisallowed`).<br>• gRPC (`catalog.proto`, `types.proto`) and OpenAPI 3.1 REST endpoints (`openapi.yaml`, `/docs`) with PgBouncer-compatible connection configuration (`default_query_exec_mode = exec`). | 🟢 Completed |
+| **Phase 2: Read Plane & Versioned Redis Caching** | Weeks 3–4 | Direct Cache Architecture & Taxonomy | • Direct Redis 7.2 Cluster cache reads using monotonic versioned keys (`kb:{tenant_id}:{id}:v{version}`) with 1-hour safety TTL and zero L1 invalidation buses.<br>• Hierarchical key-value taxonomy parser (`namespace:key=value`) supporting query federation.<br>• Unit and Testcontainers integration suites (PostgreSQL + Redis Cluster) verifying zero cache drift across updates. | 🟡 Ready to Start |
 | **Phase 3: Migration State Machine & Ingestion Handshake** | Weeks 5–6 | Blue-Green State Machine & Delta Protocol | • Re-indexing lifecycle state machine (`ACTIVE` -> `REINDEXING` -> `PROMOTED` / `ABORTED`) supporting `DUAL_WRITE` routing rules.<br>• Temporal Go SDK client trigger integration (`ingestion_trigger.go`) for launching external backfill DAGs in `rag-ingestion-coordinator`.<br>• Promotion validation (`PromoteIndexPointer`) gating switchover on shared ingestion write-fence drain and verified `0`-lag authoritative delta replay (`kb_catalog_migration_delta_lag_records == 0`). | ⚪ Planned |
 | **Phase 4: CDC Verification, Chaos & Production Rollout** | Weeks 7–8 | Debezium Integration, Chaos & Load Tuning | • Verification of transactional outbox streaming (`KBCreated`, `KBUpdated`, `ReindexInitiated`, `PointerPromoted`, `ReindexAborted`, `KBDeleted`) via Debezium WAL capture to Apache Kafka.<br>• Chaos tests validating rollback to Green upon backfill failure or stalled delta buffers (`AbortReindexing`).<br>• Load benchmarking verifying $P99 \le 5\text{ms}$ reads and $P99 \le 20\text{ms}$ writes at 3,000 RPS within $\le 128\text{MiB}$ RSS per pod. | ⚪ Planned |
 
@@ -38,6 +38,15 @@
   - **Phase 1 Implementation Prompt Pressure Test & Contract Hardening** ([`../prompts/phase-1-core-schemas-and-concurrency-controls.md`](../prompts/phase-1-core-schemas-and-concurrency-controls.md), [`doc-api.md`](doc-api.md), [`../api/openapi/openapi.yaml`](../api/openapi/openapi.yaml)):
     - Pressure-tested `prompts/phase-1-core-schemas-and-concurrency-controls.md` against `tasks/RAG KB Catalog Service Implementation Plan.pdf` and all local `tasks/*.pdf` architectural blueprints, resolving 12 findings (`F-01` through `F-12`).
     - Added partial unique index `uq_kb_migrations_one_active` on `kb_migrations (tenant_id, kb_id) WHERE state = 'REINDEXING'`, strict OCC `RowsAffected() == 0` disambiguation (`ErrKnowledgeBaseNotFound` vs. `ErrInvalidStateTransition` vs. `ErrVersionConflict`), deterministic coarse RBAC matrix (`Owner`, `Editor`, `Viewer`, `Auditor`), idempotency hash verification, and cross-phase port contracts for Redis Cluster and Temporal.
+- **Phase 1: Core Schemas & Concurrency Controls**:
+  - **PostgreSQL 16 Schema & Migrations** ([`../internal/infrastructure/persistence/migrations/000001_init_catalog_schema.up.sql`](../internal/infrastructure/persistence/migrations/000001_init_catalog_schema.up.sql), [`../internal/infrastructure/persistence/migrations/000001_init_catalog_schema.down.sql`](../internal/infrastructure/persistence/migrations/000001_init_catalog_schema.down.sql)):
+    - Implemented `knowledge_bases`, `kb_migrations` (with partial unique index `uq_kb_migrations_one_active`), `outbox_events`, and `idempotency_keys` with strict compound `(tenant_id, ...)` keys and GIN taxonomy indices.
+  - **Pure Hexagonal Domain Layer** ([`../internal/domain/`](../internal/domain/)):
+    - Implemented `KnowledgeBase` aggregate root, Blue-Green migration state machine (`migration_state.go`), Static Validated Model Registry (`model_reference.go`), hierarchical taxonomy parser (`taxonomy.go`), vector schema immutability guard (`immutability_guard.go`), coarse RBAC evaluator (`access_evaluator.go`), and outbox events (`events.go`) with zero third-party I/O imports.
+  - **Application & Infrastructure Layers** ([`../internal/application/`](../internal/application/), [`../internal/infrastructure/`](../internal/infrastructure/)):
+    - Implemented CRUD & Blue-Green migration commands/queries, `pgxpool` setup enforcing `pgx.QueryExecModeExec` (`default_query_exec_mode = exec`), transactional outbox repository, OCC disambiguation, `sync.Pool` buffer management, Prometheus telemetry, and secured `log/slog` JSON redaction.
+  - **gRPC & OpenAPI 3.1 HTTP Transport + Unit/Concurrency Tests** ([`../api/proto/v1/`](../api/proto/v1/), [`../internal/transport/`](../internal/transport/), [`../cmd/catalog-service/main.go`](../cmd/catalog-service/main.go), [`../test/unit/`](../test/unit/)):
+    - Implemented `CatalogService` gRPC server & auth/logging interceptors, HTTP REST & Doc API router (`/docs`, `/redoc`, `/api/docs`, `/openapi.json`, `/healthz`, `/ready`, `/metrics`), and unit/concurrency tests (including 20-goroutine OCC race verification).
 
 ---
 

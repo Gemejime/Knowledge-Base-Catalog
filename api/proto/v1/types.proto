@@ -1,0 +1,146 @@
+syntax = "proto3";
+
+package rag.catalog.v1;
+
+option go_package = "github.com/gemejime/rag-kb-catalog-service/api/proto/v1;catalogv1";
+
+import "google/protobuf/field_mask.proto";
+import "google/protobuf/timestamp.proto";
+
+enum LifecycleState {
+  LIFECYCLE_STATE_UNSPECIFIED = 0;
+  LIFECYCLE_STATE_CREATING = 1;
+  LIFECYCLE_STATE_ACTIVE = 2;
+  LIFECYCLE_STATE_REINDEXING = 3;
+  LIFECYCLE_STATE_PROMOTED = 4;
+  LIFECYCLE_STATE_ABORTED = 5;
+  LIFECYCLE_STATE_TOMBSTONED = 6;
+}
+
+enum RoutingPolicy {
+  ROUTING_POLICY_UNSPECIFIED = 0;
+  ROUTING_POLICY_GREEN_ONLY = 1;
+  ROUTING_POLICY_DUAL_WRITE = 2;
+}
+
+enum DistanceMetric {
+  DISTANCE_METRIC_UNSPECIFIED = 0;
+  DISTANCE_METRIC_COSINE = 1;
+  DISTANCE_METRIC_DOT_PRODUCT = 2;
+  DISTANCE_METRIC_L2 = 3;
+}
+
+message VectorSchema {
+  string embedding_model = 1;
+  uint32 dimensions = 2;
+  DistanceMetric distance_metric = 3;
+  string schema_version = 4;
+}
+
+message RetrievalProfile {
+  uint32 default_top_k = 1;
+  float dense_weight = 2;
+  float sparse_weight = 3;
+  uint32 reranker_candidate_pool_size = 4;
+  float cross_encoder_confidence_threshold = 5;
+}
+
+message KnowledgeBase {
+  string tenant_id = 1;
+  string kb_id = 2;
+  string name = 3;
+  string description = 4;
+  uint64 version = 5;
+  LifecycleState state = 6;
+  RoutingPolicy routing_policy = 7;
+  string active_index_pointer = 8;
+  string candidate_index_pointer = 9;
+  VectorSchema active_schema = 10;
+  VectorSchema candidate_schema = 11;
+  RetrievalProfile retrieval_profile = 12;
+  repeated string taxonomy_tags = 13; // Format: "namespace:key=value"
+  google.protobuf.Timestamp created_at = 14;
+  google.protobuf.Timestamp updated_at = 15;
+}
+
+message CreateKBRequest {
+  string tenant_id = 1;
+  string name = 2;
+  string description = 3;
+  VectorSchema vector_schema = 4;
+  RetrievalProfile retrieval_profile = 5;
+  repeated string taxonomy_tags = 6;
+  string idempotency_key = 7;
+}
+
+message UpdateKBRequest {
+  string tenant_id = 1;
+  string kb_id = 2;
+  uint64 expected_version = 3;
+  optional string name = 4;
+  optional string description = 5;
+  optional RetrievalProfile retrieval_profile = 6;
+  repeated string taxonomy_tags = 7;
+  optional VectorSchema attempted_schema_mutation = 8; // Guarded: triggers ErrStructuralMutationDisallowed if mutated
+  google.protobuf.FieldMask update_mask = 9; // Selected-field semantics: include "taxonomy_tags" with empty taxonomy_tags to clear tags; omit "taxonomy_tags" from mask to preserve existing tags
+}
+
+message GetKBRequest {
+  string tenant_id = 1;
+  string kb_id = 2;
+  optional uint64 min_version = 3;
+}
+
+message ListKBsRequest {
+  string tenant_id = 1;
+  repeated string taxonomy_filters = 2;
+  uint32 page_size = 3;
+  string page_token = 4;
+}
+
+message ListKBsResponse {
+  repeated KnowledgeBase knowledge_bases = 1;
+  string next_page_token = 2;
+}
+
+message DeleteKBRequest {
+  string tenant_id = 1;
+  string kb_id = 2;
+  uint64 expected_version = 3;
+}
+
+message TriggerReindexingRequest {
+  string tenant_id = 1;
+  string kb_id = 2;
+  uint64 expected_version = 3;
+  VectorSchema target_blue_schema = 4;
+}
+
+message MigrationResponse {
+  string tenant_id = 1;
+  string kb_id = 2;
+  string migration_id = 3;
+  LifecycleState state = 4;
+  RoutingPolicy routing_policy = 5;
+  string candidate_index_pointer = 6;
+  uint64 version = 7;
+}
+
+message PromotePointerRequest {
+  string tenant_id = 1;
+  string kb_id = 2;
+  uint64 expected_version = 3;
+  optional uint64 verified_delta_lag_records = 4; // Optional client assertion checked against the server's authoritative migration lag (kb_migrations.delta_lag_records), not the source of the promotion gate
+}
+
+message AbortReindexingRequest {
+  string tenant_id = 1;
+  string kb_id = 2;
+  uint64 expected_version = 3;
+  string reason = 4;
+}
+
+message KBResponse {
+  KnowledgeBase knowledge_base = 1;
+}
+

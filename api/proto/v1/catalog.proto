@@ -1,0 +1,20 @@
+syntax = "proto3";
+
+package rag.catalog.v1;
+
+option go_package = "github.com/gemejime/rag-kb-catalog-service/api/proto/v1;catalogv1";
+
+import "google/protobuf/empty.proto";
+import "api/proto/v1/types.proto";
+
+service CatalogService {
+  rpc CreateKnowledgeBase(CreateKBRequest) returns (KBResponse);
+  rpc UpdateKnowledgeBase(UpdateKBRequest) returns (KBResponse);
+  rpc GetKnowledgeBase(GetKBRequest) returns (KBResponse);
+  rpc ListKnowledgeBases(ListKBsRequest) returns (ListKBsResponse);
+  rpc DeleteKnowledgeBase(DeleteKBRequest) returns (google.protobuf.Empty);
+  rpc TriggerReindexing(TriggerReindexingRequest) returns (MigrationResponse);
+  rpc PromoteIndexPointer(PromotePointerRequest) returns (KBResponse);
+  rpc AbortReindexing(AbortReindexingRequest) returns (google.protobuf.Empty);
+}
+
