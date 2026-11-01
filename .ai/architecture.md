@@ -43,14 +43,14 @@ Aligned with [Production Grade Backend Concepts.pdf](tasks/Production%20Grade%20
 
 ### Layer 2: Data Persistence & State
 7. **Database Migrations (`internal/infrastructure/persistence/migrations/`)**:
-   - Version-controlled, deterministic SQL migrations defining `knowledge_bases`, `kb_migrations`, and `outbox_events` with compound tenant keys and indices.
+   - Version-controlled, deterministic SQL migrations defining `knowledge_bases`, `kb_migrations`, `outbox_events`, and `idempotency_keys` with compound tenant keys and indices.
 8. **Database Transactions (ACID) & Transactional Outbox (`internal/infrastructure/persistence/postgres/`)**:
-   - Every state mutation (`KBCreated`, `ReindexInitiated`, `PointerPromoted`, `KBDeleted`) executes inside a single atomic PostgreSQL ACID transaction that updates the entity row (`version = version + 1`) AND inserts the domain event payload into the `outbox_events` table. If either operation fails, the entire transaction rolls back—guaranteeing zero lost CDC events for Debezium WAL tailing.
+   - Every state mutation (`KBCreated`, `KBUpdated`, `ReindexInitiated`, `PointerPromoted`, `ReindexAborted`, `KBDeleted`) executes inside a single atomic PostgreSQL ACID transaction that updates the entity row (`version = version + 1`), updates `kb_migrations` when applicable, AND inserts the domain event payload into the `outbox_events` table. If any operation fails, the entire transaction rolls back—guaranteeing zero lost CDC events for Debezium WAL tailing.
 9. **Connection Pooling (`internal/infrastructure/persistence/postgres/pool.go`)**:
    - Managed `pgxpool.Pool` connecting through PgBouncer in transaction mode. Explicitly sets `default_query_exec_mode = exec` (`pgx.QueryExecModeExec`) to avoid prepared statement collisions across pooled backend connections.
 10. **Caching (`internal/infrastructure/cache/redis/cluster_client.go`)**:
     - Direct Redis 7.2 Cluster read plane ($P99 \le 5\text{ms}$ at 3,000 RPS).
-    - Uses monotonic versioned keys (`kb:{tenant_id}:{id}:v{version}`) with a bounded safety TTL (1 hour), eliminating in-process L1 caches and Pub/Sub invalidation race conditions (ADR-003).
+    - Uses monotonic versioned keys (`kb:{tenant_id}:{id}:v{version}`) co-located on the same Redis Cluster CRC16 hash slot via `{tenant_id}` hash tags alongside a monotonic version pointer (`kb:{tenant_id}:{id}:latest_version`) with a bounded safety TTL (1 hour / `3600s`), eliminating in-process L1 caches and Pub/Sub invalidation race conditions (ADR-003).
 11. **Pagination & Query Limits (`internal/application/query/list_knowledge_bases.go`)**:
     - Cursor-based pagination (`page_token`, `page_size`) with strict upper bounds (e.g., max 100 items per page) and indexed taxonomy filtering to prevent OOM spikes.
 12. **Resource Identification Strategies**:
@@ -82,12 +82,12 @@ Aligned with [Production Grade Backend Concepts.pdf](tasks/Production%20Grade%20
       - `kb_catalog_requests_total` (Counter: `method`, `tenant`, `status_code`)
       - `kb_catalog_request_duration_seconds` (Histogram: P50, P90, P99)
       - `kb_catalog_optimistic_conflicts_total` (Counter: HTTP 409 / gRPC Aborted)
-      - `kb_catalog_migration_delta_lag_records` (Gauge: outstanding delta write backlog before cutover)
+      - `kb_catalog_migration_delta_lag_records` (Gauge: outstanding delta write backlog before cutover; referenced in Runbook 1 as `kb_migration_delta_lag_records`)
       - `kb_catalog_active_migrations` (Gauge: currently active Blue-Green migrations)
     - **Distributed Tracing**: OpenTelemetry trace context propagation across gRPC interceptors and HTTP middleware.
 20. **Health Checks & Graceful Error Handling**:
     - Liveness (`/healthz`) and Readiness (`/ready`) probes monitoring active DB pool and Redis Cluster health.
-    - Deterministic domain-to-transport error mapping (`ErrStructuralMutationDisallowed` -> HTTP `422 Unprocessable Entity` / gRPC `FailedPrecondition`; `ErrVersionConflict` -> HTTP `409 Conflict` / gRPC `Aborted`; `ErrDeltaLagNotZero` -> HTTP `409 Conflict` / gRPC `FailedPrecondition`) with sanitized external error payloads and clean connection draining on shutdown.
+    - Deterministic domain-to-transport error mapping (`ErrStructuralMutationDisallowed` -> HTTP `422 Unprocessable Entity` / gRPC `FailedPrecondition`; `ErrVersionConflict` -> HTTP `409 Conflict` / gRPC `Aborted`; `ErrDeltaLagNotZero` -> HTTP `409 Conflict` / gRPC `FailedPrecondition`; `ErrInvalidStateTransition` -> HTTP `409 Conflict` / gRPC `FailedPrecondition`) with sanitized external error payloads and clean connection draining on shutdown.
 
 ---
 
@@ -125,6 +125,7 @@ rag-kb-catalog-service/
 │   │   │   ├── update_knowledge_base.go
 │   │   │   ├── trigger_reindexing.go    # Initiates Blue-Green state & sets dual-write policy
 │   │   │   ├── promote_pointer.go       # Checks delta lag, updates pointer, bumps version
+│   │   │   ├── abort_reindexing.go      # Aborts migration, locks Green pointer, emits Blue cleanup event
 │   │   │   └── delete_knowledge_base.go # Soft-deletes and writes purge event to outbox
 │   │   ├── query/                       # Read workflows
 │   │   │   ├── get_knowledge_base.go    # Direct Redis read with DB fallback
@@ -167,11 +168,32 @@ rag-kb-catalog-service/
 
 ---
 
-## 4. Architectural Decision Records (ADRs)
+## 4. Disaggregated Hybrid Ecosystem & Naming Convention Matrix
+
+Per `My Naming Convention.pdf`, `Disaggregated Hybrid Model Architecture.pdf`, and `Go and Python Microservices Architecture.pdf`, `rag-kb-catalog-service` operates within a 12-service polyglot topology:
+
+| Subsystem Architecture Entry | Canonical Deployment Target (`rag-*`) | Runtime | Interaction with `rag-kb-catalog-service` |
+| :--- | :--- | :--- | :--- |
+| **Knowledge Base Catalog** | `rag-kb-catalog-service` | Go 1.23+ | **This service**: Control-plane authority for KB CRUD, OCC versioning, static model validation, taxonomy discovery, Blue-Green migration state machine, and transactional CDC outbox. |
+| **Search Orchestrator** | `rag-search-orchestrator` | Go | Calls `GetKnowledgeBase` over gRPC / reads Redis Cluster (`kb:{tenant_id}:{id}:v{ver}`) to resolve `active_index_pointer`, `retrieval_profile`, and `version` (`CorpusVersion` in `CacheKey = Hash(QueryVector + TenantID + CorpusVersion)`). Owns Tier 1/2 caches and Roaring Bitmap ACLs. |
+| **Pipeline Coordinator** | `rag-ingestion-coordinator` | Go | Triggered via Temporal client (`ingestion_trigger.go`) on `TriggerReindexing` to run Blue backfill DAGs; reads `routing_policy` (`GREEN_ONLY` vs. `DUAL_WRITE`) from Redis Cluster. |
+| **Chunk Lifecycle Service** | `rag-chunk-lifecycle-service` | Go | Consumes `KBDeleted`, `PointerPromoted`, and `ReindexAborted` CDC outbox events from Kafka to execute asynchronous storage compaction and index purge sagas. |
+| **Notification Dispatch Daemon** | `rag-notification-dispatch-daemon` | Go | Consumes `KBCreated`, `ReindexInitiated`, `PointerPromoted`, `ReindexAborted`, and `KBDeleted` CDC outbox events to stream SSE/WebSocket status updates and trigger `rag-webhook-delivery-worker`. |
+| **Telemetry & Audit Daemon** | `rag-telemetry-audit-daemon` | Go | Records immutable HIPAA/SOC2 audit trails and corpus telemetry alongside Prometheus/ClickHouse (per `ADR-006`). |
+| **Prompt Registry Service** | `rag-prompt-registry-service` | Go | Independent vertical control-plane service for immutable prompt templates. |
+| **Embedding & Reranker Pools** | `rag-inference-serving` | Python (Triton/vLLM) | Executes GPU inference for models validated against the catalog's static model registry (`ADR-006`). |
+| **Document AI Parsers** | `rag-document-ai-worker` | Python (GPU) | Dispatched by `rag-ingestion-coordinator` during initial ingestion and Blue-Green backfills. |
+| **Tabular SQL Engine** | `rag-tabular-analytics-worker` | Python (DuckDB) | Sandboxed Parquet analytics worker; decoupled from catalog control plane. |
+| **Evaluation & Quality Worker** | `rag-eval-governance-worker` | Python | Offline Ragas/TruLens evaluation and PII masking worker. |
+| **Webhook / Trace Workers** | `rag-webhook-delivery-worker` / `rag-trace-collector-worker` | Python | Outbound HMAC webhook egress and OpenTelemetry provenance graph assembly. |
+
+---
+
+## 5. Architectural Decision Records (ADRs)
 
 - **ADR-001: Vector Schema Immutability & Re-Indexing State Machine**: Forbids in-place vector index schema mutations (`ErrStructuralMutationDisallowed`). Any dimension, model, or distance metric upgrade must execute via a tracked Blue-Green migration state machine (`ACTIVE` -> `REINDEXING` -> `PROMOTED` / `ABORTED`).
 - **ADR-002: Replay Buffer Protocol for Live Re-Indexing Writes**: Specifies that while a knowledge base is in `REINDEXING` status, write ingress routes live documents to both Green and a replay buffer for Blue (`DUAL_WRITE`). Atomic promotion (`PromoteIndexPointer`) is strictly blocked until backfill finishes and delta buffer lag reaches zero (`lag == 0`).
 - **ADR-003: Versioned Redis Keys Over In-Process L1 Invalidation**: Eliminates in-process memory caching and Redis Pub/Sub invalidation buses to prevent silent split-brain conditions. Standardizes on direct Redis Cluster reads using monotonic version keys (`kb:{tenant_id}:{id}:v{version}`).
 - **ADR-004: Optimistic Concurrency Control Over Pessimistic Row Locking**: Enforces an integer `version` check (`version = version + 1`) on all updates to avoid row-level lock contention and deadlocks under PgBouncer transaction-mode connection pooling.
 - **ADR-005: Outbox Tailing Delegated Exclusively to Debezium**: Removes internal application-level outbox polling loops. The service commits event records to an `outbox_events` table within the same PostgreSQL transaction; Debezium captures changes directly from the PostgreSQL WAL.
-- **ADR-006: Exclusion of Dynamic Model Registry and Telemetry Aggregation**: Defers hardware inference definitions, tokenizers, and cost tiers to model routers, while routing corpus runtime statistics to Prometheus and ClickHouse.
+- **ADR-006: Exclusion of Dynamic Model Registry and Telemetry Aggregation**: Reconciles the platform-wide specification with this microservice's strict boundaries by deferring dynamic hardware inference definitions, VLM tokenizers, and cost tiers to LLM gateways/model routers (retaining only a fast, declarative **Static Validated Model Registry** in `model_reference.go`), while routing corpus runtime statistics (byte footprints, token counts, fragmentation ratios) to Prometheus and ClickHouse.

@@ -356,10 +356,15 @@ message KBResponse {
 - **Static Validated Model Registry (`internal/domain/entity/model_reference.go`)**: Validates model identifiers against supported dimension sizes and allowed distance metrics before persistence.
 
 ### B. Blue-Green Migration State Machine (`internal/domain/entity/migration_state.go`)
-- `ACTIVE` -> `REINDEXING`: Allowed via `TriggerReindexing`. Sets `routing_policy = DUAL_WRITE`, allocates `candidate_index_pointer` (Blue), and triggers Temporal backfill workflow in `rag-ingestion-coordinator`.
-- `REINDEXING` -> `PROMOTED` (then `ACTIVE`): Allowed via `PromoteIndexPointer` **ONLY IF** `delta_lag == 0` (`kb_migration_delta_lag_records == 0`). Atomically swaps `active_index_pointer` to Blue, resets `routing_policy = GREEN_ONLY`, increments `version`, and emits `PointerPromoted` outbox event.
-- `REINDEXING` -> `ABORTED` (then `ACTIVE`): Allowed via `AbortReindexing`. Keeps `active_index_pointer` locked to Green, resets `routing_policy = GREEN_ONLY`, increments `version`, and emits cleanup event to purge orphaned Blue index.
-- `REINDEXING` -> `ACTIVE` (Direct): **Disallowed** without explicit abort or verified 0-lag promotion.
+- **Pure State Transition Matrix (`ValidateTransition(from, to LifecycleState, deltaLag uint64)`)**:
+  - `CREATING` -> `ACTIVE`: Initial creation transition.
+  - `ACTIVE` -> `REINDEXING`: Allowed via `TriggerReindexing`. Sets `routing_policy = DUAL_WRITE`, allocates `candidate_index_pointer` (Blue), inserts an active migration row in `kb_migrations`, emits `ReindexInitiated` to `outbox_events`, and triggers the Temporal backfill workflow in `rag-ingestion-coordinator`.
+  - `REINDEXING` -> `PROMOTED`: Allowed via `PromoteIndexPointer` **ONLY IF** `delta_lag == 0` (`kb_catalog_migration_delta_lag_records == 0`, also referenced as `kb_migration_delta_lag_records`). If `delta_lag > 0`, returns `ErrDeltaLagNotZero` (HTTP `409 Conflict` / gRPC `FailedPrecondition`).
+  - `REINDEXING` -> `ABORTED`: Allowed via `AbortReindexing` (or `AbortMigration` during worker failure rollback).
+  - `REINDEXING` -> `ACTIVE` (Direct): **Strictly Disallowed** (`ErrInvalidStateTransition`) without executing an explicit `PromoteIndexPointer` (with `delta_lag == 0`) or `AbortReindexing` transition first.
+- **Aggregate Settlement After `PROMOTED` or `ABORTED`**:
+  - When `PromoteIndexPointer` transitions the migration through `PROMOTED`, the migration record in `kb_migrations` is persisted as `PROMOTED`, `active_index_pointer` atomically switches to the Blue pointer, `active_schema` updates to `candidate_schema`, `candidate_index_pointer` is cleared, `routing_policy` resets to `GREEN_ONLY`, the KB operational state settles at `ACTIVE` (`version = version + 1`), and `PointerPromoted` is written to `outbox_events`.
+  - When `AbortReindexing` transitions the migration through `ABORTED`, the migration record in `kb_migrations` is persisted as `ABORTED`, `active_index_pointer` remains locked to Green, `candidate_index_pointer` is cleared, `routing_policy` resets to `GREEN_ONLY`, the KB operational state resets to `ACTIVE` (`version = version + 1`), and `ReindexAborted` (cleanup event to purge the orphaned Blue index) is written to `outbox_events`.
 
 ### C. Hierarchical Taxonomy Parser (`internal/domain/entity/taxonomy.go`)
 - Enforces standardized key-value namespace syntax (`namespace:key=value` or `namespace:value`, e.g., `env:production`, `compliance:hipaa`, `domain:finance`).
@@ -371,17 +376,109 @@ message KBResponse {
 
 ### A. PostgreSQL 16 Relational Schema (`internal/infrastructure/persistence/migrations/`)
 - **Connection Mode**: `pgx/v5` configured with `default_query_exec_mode = exec` (`pgx.QueryExecModeExec`) for PgBouncer transaction pooling compatibility.
-- **Table `knowledge_bases`**:
-  - Compound primary key: `PRIMARY KEY (tenant_id, kb_id)`.
-  - Optimistic concurrency column: `version BIGINT NOT NULL DEFAULT 1`.
-  - GIN index on `taxonomy_tags JSONB / TEXT[]` scoped by `tenant_id`.
-- **Table `outbox_events` (ADR-005)**:
-  - Stores atomic transactional domain events (`KBCreated`, `ReindexInitiated`, `PointerPromoted`, `KBDeleted`) for Debezium WAL capture to Apache Kafka.
+
+```sql
+-- 1. Authoritative Knowledge Base Catalog Table
+CREATE TABLE IF NOT EXISTS knowledge_bases (
+    tenant_id                TEXT        NOT NULL,
+    kb_id                    UUID        NOT NULL,
+    name                     TEXT        NOT NULL,
+    description              TEXT        NOT NULL DEFAULT '',
+    version                  BIGINT      NOT NULL DEFAULT 1,
+    state                    TEXT        NOT NULL CHECK (state IN ('CREATING', 'ACTIVE', 'REINDEXING', 'PROMOTED', 'ABORTED', 'TOMBSTONED')),
+    routing_policy           TEXT        NOT NULL DEFAULT 'GREEN_ONLY' CHECK (routing_policy IN ('GREEN_ONLY', 'DUAL_WRITE')),
+    active_index_pointer     TEXT        NOT NULL,
+    candidate_index_pointer  TEXT        NOT NULL DEFAULT '',
+    active_schema            JSONB       NOT NULL,
+    candidate_schema         JSONB,
+    retrieval_profile        JSONB       NOT NULL,
+    taxonomy_tags            JSONB       NOT NULL DEFAULT '[]'::jsonb,
+    created_at               TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at               TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (tenant_id, kb_id),
+    CONSTRAINT uq_kb_tenant_name UNIQUE (tenant_id, name)
+);
+
+CREATE INDEX IF NOT EXISTS idx_kb_tenant_taxonomy ON knowledge_bases USING GIN (taxonomy_tags);
+CREATE INDEX IF NOT EXISTS idx_kb_tenant_state ON knowledge_bases (tenant_id, state, kb_id);
+
+-- 2. Blue-Green Schema Migration History & Audit Table
+CREATE TABLE IF NOT EXISTS kb_migrations (
+    tenant_id                TEXT        NOT NULL,
+    migration_id             UUID        NOT NULL,
+    kb_id                    UUID        NOT NULL,
+    source_green_pointer     TEXT        NOT NULL,
+    target_blue_pointer      TEXT        NOT NULL,
+    source_schema            JSONB       NOT NULL,
+    target_schema            JSONB       NOT NULL,
+    state                    TEXT        NOT NULL CHECK (state IN ('REINDEXING', 'PROMOTED', 'ABORTED')),
+    delta_lag_records        BIGINT      NOT NULL DEFAULT 0,
+    temporal_workflow_id     TEXT        NOT NULL DEFAULT '',
+    abort_reason             TEXT        NOT NULL DEFAULT '',
+    created_at               TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at               TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (tenant_id, migration_id),
+    FOREIGN KEY (tenant_id, kb_id) REFERENCES knowledge_bases (tenant_id, kb_id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_kb_migrations_active ON kb_migrations (tenant_id, kb_id, state);
+
+-- 3. Transactional CDC Outbox Table (Tailed via PostgreSQL WAL by Debezium)
+CREATE TABLE IF NOT EXISTS outbox_events (
+    event_id                 UUID        NOT NULL,
+    tenant_id                TEXT        NOT NULL,
+    aggregate_type           TEXT        NOT NULL DEFAULT 'KnowledgeBase',
+    aggregate_id             UUID        NOT NULL,
+    event_type               TEXT        NOT NULL CHECK (event_type IN ('KBCreated', 'KBUpdated', 'ReindexInitiated', 'PointerPromoted', 'ReindexAborted', 'KBDeleted')),
+    aggregate_version        BIGINT      NOT NULL,
+    payload                  JSONB       NOT NULL,
+    created_at               TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (tenant_id, event_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_outbox_tenant_created ON outbox_events (tenant_id, created_at);
+
+-- 4. Tenant-Scoped Idempotency Store
+CREATE TABLE IF NOT EXISTS idempotency_keys (
+    tenant_id                TEXT        NOT NULL,
+    idempotency_key          TEXT        NOT NULL,
+    operation                TEXT        NOT NULL,
+    request_hash             TEXT        NOT NULL,
+    response_payload         JSONB       NOT NULL,
+    status_code              INT         NOT NULL,
+    created_at               TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    expires_at               TIMESTAMPTZ NOT NULL,
+    PRIMARY KEY (tenant_id, idempotency_key)
+);
+```
+
+- **Optimistic Concurrency Control (OCC) Update Pattern (ADR-004)**:
+  ```sql
+  UPDATE knowledge_bases
+  SET name = $4,
+      description = $5,
+      retrieval_profile = $6,
+      taxonomy_tags = $7,
+      version = version + 1,
+      updated_at = NOW()
+  WHERE tenant_id = $1
+    AND kb_id = $2
+    AND version = $3
+    AND state != 'TOMBSTONED'
+  RETURNING version, updated_at;
+  ```
+  If `RowsAffected() == 0`, the repository returns `ErrVersionConflict` (mapped to HTTP `409 Conflict` / gRPC `codes.Aborted` and incrementing `kb_catalog_optimistic_conflicts_total`).
 
 ### B. Redis 7.2 Cluster Versioned Key Contract (ADR-003)
-- **Key Format**: `kb:{tenant_id}:{kb_id}:v{version}` (plus pointer lookup `kb:{tenant_id}:{kb_id}:latest_version` updated atomically).
+- **Key Format & CRC16 Hash-Tag Co-Location**:
+  - Versioned payload key: `kb:{tenant_id}:{kb_id}:v{version}`
+  - Monotonic version pointer key: `kb:{tenant_id}:{kb_id}:latest_version`
+  - Because Redis 7.2 Cluster hashes the first `{...}` substring (`{tenant_id}`), both keys for a given tenant automatically map to the **exact same Redis Cluster CRC16 hash slot**, enabling atomic single-RTT Lua (`EVALSHA`) or pipelined operations without `CROSSSLOT` errors.
 - **TTL**: Bounded safety TTL (default `3600s` / 1 hour).
-- **Coherence**: Zero in-process L1 caching and zero Pub/Sub invalidation buses. Upon committing version `v+1` in PostgreSQL, the service writes `kb:{tenant_id}:{kb_id}:v{v+1}` to Redis Cluster.
+- **Coherence & Monotonic Write-Through**:
+  - Zero in-process L1 caching and zero Pub/Sub invalidation buses.
+  - Upon committing version `v+1` in PostgreSQL, the service writes `kb:{tenant_id}:{kb_id}:v{v+1}` to Redis Cluster and advances `kb:{tenant_id}:{kb_id}:latest_version` only if `v+1 > current_latest_version`, guaranteeing that concurrent readers never observe stale data even under out-of-order network scheduling.
+  - On `GetKnowledgeBase`, if the caller specifies `min_version` (or reads the latest version), a single-RTT Lua script resolves the versioned key `kb:{tenant_id}:{kb_id}:v{version}`; on cache miss (or if cached version `< min_version`), the handler falls back to PostgreSQL and populates the versioned Redis key.
 
 ---
 
@@ -392,7 +489,7 @@ message KBResponse {
 | `kb_catalog_requests_total` | Counter | `method`, `tenant`, `status_code` | Total gRPC and REST requests partitioned by method, tenant, and status code |
 | `kb_catalog_request_duration_seconds` | Histogram | `method`, `protocol` | Handler execution latencies ($P50, P90, P99$) |
 | `kb_catalog_optimistic_conflicts_total` | Counter | `tenant`, `operation` | OCC version mismatch events (HTTP 409 / gRPC Aborted) |
-| `kb_catalog_migration_delta_lag_records` | Gauge | `tenant`, `kb_id` | Outstanding delta write backlog before Blue-Green cutover |
+| `kb_catalog_migration_delta_lag_records` | Gauge | `tenant`, `kb_id` | Outstanding delta write backlog before Blue-Green cutover (aliased as `kb_migration_delta_lag_records` in Runbook 1) |
 | `kb_catalog_active_migrations` | Gauge | `tenant` | Currently active Blue-Green migrations in `REINDEXING` state |
 
 ### Production Alert Rules

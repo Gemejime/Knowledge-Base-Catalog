@@ -34,10 +34,11 @@
    - All entity mutations execute conditionally against the monotonic `version` column (`UPDATE ... SET version = version + 1 WHERE tenant_id = $1 AND kb_id = $2 AND version = $3`).
    - If `RowsAffected() == 0`, return domain error `ErrVersionConflict`, mapped deterministically to HTTP `409 Conflict` and gRPC `codes.Aborted`.
 4. **Transactional Outbox Atomicity (ADR-005)**:
-   - State mutations (`KBCreated`, `ReindexInitiated`, `PointerPromoted`, `KBDeleted`) and their corresponding `outbox_events` insert MUST execute inside the same `pgx.Tx` database transaction.
+   - State mutations (`KBCreated`, `KBUpdated`, `ReindexInitiated`, `PointerPromoted`, `ReindexAborted`, `KBDeleted`) and their corresponding `outbox_events` insert MUST execute inside the same `pgx.Tx` database transaction.
    - Do not implement internal polling loops or `LISTEN/NOTIFY` workers; Debezium tails the PostgreSQL WAL directly.
-5. **Versioned Redis Cluster Keys (ADR-003)**:
-   - Cache active Knowledge Base configurations in Redis 7.2 Cluster using deterministic versioned keys: `kb:{tenant_id}:{id}:v{version}` with a bounded safety TTL (e.g., 1 hour).
+5. **Versioned Redis Cluster Keys & CRC16 Hash-Tag Co-Location (ADR-003)**:
+   - Cache active Knowledge Base configurations in Redis 7.2 Cluster using deterministic versioned keys: `kb:{tenant_id}:{id}:v{version}` paired with a monotonic version pointer `kb:{tenant_id}:{id}:latest_version` and a bounded safety TTL (1 hour / `3600s`).
+   - Leverage the `{tenant_id}` Redis Cluster hash tag so versioned payloads and pointer keys for a tenant resolve to the same CRC16 hash slot, enabling single-RTT Lua (`EVALSHA`) reads ($P99 \le 5\text{ms}$ at 3,000 RPS) and monotonic version pointer updates without `CROSSSLOT` errors.
    - Do not introduce in-process L1 memory caches or Redis Pub/Sub invalidation buses.
 
 ---
