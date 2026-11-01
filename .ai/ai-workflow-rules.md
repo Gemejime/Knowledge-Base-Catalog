@@ -3,6 +3,7 @@
 ## 1. Spec-Driven Development Approach
 
 Build `rag-kb-catalog-service` incrementally following a strict spec-driven workflow:
+
 - The specification documents in `tasks/` (especially `RAG KB Catalog Service Implementation Plan.pdf` and `Production Grade Backend Concepts.pdf`) and context files in [`.ai/`](.ai) define all system invariants, hexagonal boundaries, data schemas, and operational SLIs/SLOs.
 - Adhere strictly to the Pragmatic Hexagonal Folder Structure (`cmd/catalog-service`, `api/proto/v1`, `api/openapi`, `internal/domain`, `internal/application`, `internal/infrastructure`, `internal/transport`, `deployments`, `test`) and Architectural Decision Records (`ADR-001` through `ADR-006`).
 - Do not introduce out-of-scope features such as in-process L1 caches, Redis Pub/Sub invalidation buses, application-level outbox polling loops, dynamic hardware/VLM model registries, or in-process Roaring Bitmap evaluations.
@@ -11,6 +12,7 @@ Build `rag-kb-catalog-service` incrementally following a strict spec-driven work
 
 ## 2. Human-in-the-Loop & Safety Guards
 
+- **Plan First**: Create an implementation prompt in `prompts/<task-name>.md` detailing goals, files to modify, security, and verification steps and ask for clarification if requirements are ambiguous.
 - **Clarify Ambiguities**: If business rules, RBAC permissions, or migration state transitions are ambiguous, ask for clarification before making assumptions.
 - **Destructive Action Guards**: Always request human confirmation before executing destructive SQL operations, dropping tables, or force-resetting Git history.
 - **Demonstrate & Verify**: After completing each unit of work, run formatting, linting, static analysis, secured logging checks, OpenAPI/Doc API synchronization checks, and automated tests.
@@ -29,7 +31,7 @@ Build `rag-kb-catalog-service` incrementally following a strict spec-driven work
 8. **Git Commit Standards**:
    - **Git Commit Frequency**: Commit code as you build. Every working session or phase must contain **at least two git commits**.
    - **Conventional Commit Patterns**: All git commit messages must strictly adhere to the following prefixes:
-     - `feat:` for new features 
+     - `feat:` for new features
      - `fix:` for bug fixes
      - `refactor:` for code refactoring
      - `docs:` for documentation updates
