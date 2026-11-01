@@ -35,6 +35,9 @@
     - Updated all `.ai/` context files (`project-overview.md`, `architecture.md`, `doc-api.md`, `code-standards.md`, `security.md`, `ai-workflow-rules.md`, `agents.md`, `progress-tracker.md`) and `.ai.md` to specify `rag-kb-catalog-service` in Go 1.23+ adhering to `RAG KB Catalog Service Implementation Plan.pdf` and `Production Grade Backend Concepts.pdf`.
     - Created `GEMINI.MD` and `api/openapi/openapi.yaml` (full OpenAPI 3.1.0 schema with `bearerAuth`, UUID `kb_id` path parameters, and component schemas).
     - Executed comprehensive adversarial pressure-test and review hardening across `.ai/`, `GEMINI.MD`, `api/openapi/openapi.yaml`, and `.github/workflows/ci.yml`.
+  - **Phase 1 Implementation Prompt Pressure Test & Contract Hardening** ([`../prompts/phase-1-core-schemas-and-concurrency-controls.md`](../prompts/phase-1-core-schemas-and-concurrency-controls.md), [`doc-api.md`](doc-api.md), [`../api/openapi/openapi.yaml`](../api/openapi/openapi.yaml)):
+    - Pressure-tested `prompts/phase-1-core-schemas-and-concurrency-controls.md` against `tasks/RAG KB Catalog Service Implementation Plan.pdf` and all local `tasks/*.pdf` architectural blueprints, resolving 12 findings (`F-01` through `F-12`).
+    - Added partial unique index `uq_kb_migrations_one_active` on `kb_migrations (tenant_id, kb_id) WHERE state = 'REINDEXING'`, strict OCC `RowsAffected() == 0` disambiguation (`ErrKnowledgeBaseNotFound` vs. `ErrInvalidStateTransition` vs. `ErrVersionConflict`), deterministic coarse RBAC matrix (`Owner`, `Editor`, `Viewer`, `Auditor`), idempotency hash verification, and cross-phase port contracts for Redis Cluster and Temporal.
 
 ---
 
