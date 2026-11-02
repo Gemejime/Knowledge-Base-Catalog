@@ -9,8 +9,8 @@ dist/
 *.dll
 *.so
 *.dylib
-catalog-service
-rag-kb-catalog-service
+/catalog-service
+/rag-kb-catalog-service
 
 # Go Test & Coverage Outputs
 *.test
