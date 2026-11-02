@@ -23,10 +23,14 @@ const (
 
 // Config encapsulates configuration for the Temporal IngestionTrigger adapter.
 type Config struct {
-	HostPort     string
-	Namespace    string
-	TaskQueue    string
-	WorkflowName string
+	HostPort           string
+	Namespace          string
+	TaskQueue          string
+	WorkflowName       string
+	InitialInterval    time.Duration
+	BackoffCoefficient float64
+	MaximumInterval    time.Duration
+	MaximumAttempts    int32
 }
 
 // TemporalClient wraps the Temporal Go SDK client to implement workflow.IngestionTrigger.
@@ -34,6 +38,7 @@ type TemporalClient struct {
 	client       client.Client
 	taskQueue    string
 	workflowName string
+	retryPolicy  *temporal.RetryPolicy
 	logger       *slog.Logger
 }
 
@@ -78,6 +83,7 @@ func NewClient(cfg Config, logger *slog.Logger) (*TemporalClient, error) {
 		client:       c,
 		taskQueue:    tq,
 		workflowName: wfName,
+		retryPolicy:  buildRetryPolicy(cfg),
 		logger:       logger,
 	}, nil
 }
@@ -99,7 +105,34 @@ func NewTemporalClientWithSDK(c client.Client, cfg Config, logger *slog.Logger) 
 		client:       c,
 		taskQueue:    tq,
 		workflowName: wfName,
+		retryPolicy:  buildRetryPolicy(cfg),
 		logger:       logger,
+	}
+}
+
+func buildRetryPolicy(cfg Config) *temporal.RetryPolicy {
+	initInterval := cfg.InitialInterval
+	if initInterval < 100*time.Millisecond || initInterval > 1*time.Minute {
+		initInterval = time.Second
+	}
+	backoff := cfg.BackoffCoefficient
+	if backoff < 1.0 || backoff > 5.0 {
+		backoff = 2.0
+	}
+	maxInterval := cfg.MaximumInterval
+	if maxInterval < initInterval || maxInterval > 10*time.Minute {
+		maxInterval = 10 * time.Second
+	}
+	maxAttempts := cfg.MaximumAttempts
+	if maxAttempts < 1 || maxAttempts > 10 {
+		maxAttempts = 3
+	}
+
+	return &temporal.RetryPolicy{
+		InitialInterval:    initInterval,
+		BackoffCoefficient: backoff,
+		MaximumInterval:    maxInterval,
+		MaximumAttempts:    maxAttempts,
 	}
 }
 
@@ -132,12 +165,7 @@ func (t *TemporalClient) TriggerBackfillDAG(ctx context.Context, req workflow.Ba
 		TaskQueue:                t.taskQueue,
 		WorkflowExecutionTimeout: 24 * time.Hour,
 		WorkflowTaskTimeout:      1 * time.Minute,
-		RetryPolicy: &temporal.RetryPolicy{
-			InitialInterval:    time.Second,
-			BackoffCoefficient: 2.0,
-			MaximumInterval:    10 * time.Second,
-			MaximumAttempts:    3,
-		},
+		RetryPolicy:              t.retryPolicy,
 	}
 
 	start := time.Now()
@@ -195,4 +223,3 @@ func (a *slogTemporalAdapter) Warn(msg string, keyvals ...any) {
 func (a *slogTemporalAdapter) Error(msg string, keyvals ...any) {
 	a.logger.Error(msg, keyvals...)
 }
-

@@ -47,9 +47,6 @@ func NewRouter(
 	// Authenticated /v1/knowledge-bases Administrative & Discovery Routes
 	authWrap := middleware.AuthMiddleware(jwtSecret, WriteError)
 
-	// Protect /metrics on the public mux with authWrap to prevent public unauthenticated exposure
-	mux.Handle("GET /metrics", authWrap(MetricsHandler(metrics)))
-
 	v1Handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		reqID := middleware.RequestIDFromContext(r.Context())
 		path := strings.TrimSuffix(r.URL.Path, "/")

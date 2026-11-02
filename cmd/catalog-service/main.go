@@ -15,6 +15,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"google.golang.org/grpc"
 
+	"github.com/gemejime/rag-kb-catalog-service/api/openapi"
 	catalogv1 "github.com/gemejime/rag-kb-catalog-service/api/proto/v1"
 	"github.com/gemejime/rag-kb-catalog-service/internal/application/command"
 	"github.com/gemejime/rag-kb-catalog-service/internal/application/query"
@@ -38,10 +39,11 @@ func main() {
 
 	httpAddr := envOrDefault("HTTP_ADDR", ":8080")
 	grpcAddr := envOrDefault("GRPC_ADDR", ":50051")
+	metricsAddr := envOrDefault("METRICS_ADDR", ":9090")
 	dbURL := os.Getenv("DATABASE_URL")
-	jwtSecret := os.Getenv("JWT_PUBLIC_KEY")
+	jwtSecret := os.Getenv("JWT_HMAC_SECRET")
 	if strings.TrimSpace(jwtSecret) == "" {
-		logger.Error("startup aborted: JWT_PUBLIC_KEY environment variable is required")
+		logger.Error("startup aborted: JWT_HMAC_SECRET environment variable is required")
 		os.Exit(1)
 	}
 
@@ -157,13 +159,22 @@ func main() {
 		getQuery,
 		listQuery,
 		readinessCheck,
-		nil,
+		openapi.SpecJSON(),
 	)
 	router := httptransport.NewRouter(httpHandler, jwtSecret, logger, metrics)
 
 	httpServer := &http.Server{
 		Addr:              httpAddr,
 		Handler:           router,
+		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       10 * time.Second,
+		WriteTimeout:      10 * time.Second,
+		IdleTimeout:       60 * time.Second,
+	}
+
+	metricsServer := &http.Server{
+		Addr:              metricsAddr,
+		Handler:           httptransport.NewMetricsRouter(metrics),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       10 * time.Second,
 		WriteTimeout:      10 * time.Second,
@@ -191,10 +202,13 @@ func main() {
 		os.Exit(1)
 	}
 
+	errCh := make(chan error, 3)
+
 	go func() {
 		logger.Info("starting grpc server", slog.String("addr", grpcAddr))
 		if serveErr := grpcServer.Serve(grpcLis); serveErr != nil {
 			logger.Error("grpc server terminated with error", slog.String("error", serveErr.Error()))
+			errCh <- serveErr
 		}
 	}()
 
@@ -202,11 +216,26 @@ func main() {
 		logger.Info("starting http server", slog.String("addr", httpAddr))
 		if serveErr := httpServer.ListenAndServe(); serveErr != nil && !errors.Is(serveErr, http.ErrServerClosed) {
 			logger.Error("http server terminated with error", slog.String("error", serveErr.Error()))
+			errCh <- serveErr
 		}
 	}()
 
-	<-ctx.Done()
-	logger.Info("shutdown signal received, draining connections")
+	go func() {
+		logger.Info("starting internal metrics server", slog.String("addr", metricsAddr))
+		if serveErr := metricsServer.ListenAndServe(); serveErr != nil && !errors.Is(serveErr, http.ErrServerClosed) {
+			logger.Error("metrics server terminated with error", slog.String("error", serveErr.Error()))
+			errCh <- serveErr
+		}
+	}()
+
+	var exitCode int
+	select {
+	case <-ctx.Done():
+		logger.Info("shutdown signal received, draining connections")
+	case err := <-errCh:
+		logger.Error("server encountered unexpected error, initiating shutdown", slog.String("error", err.Error()))
+		exitCode = 1
+	}
 
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -215,7 +244,13 @@ func main() {
 	if err := httpServer.Shutdown(shutdownCtx); err != nil {
 		logger.Error("http server graceful shutdown error", slog.String("error", err.Error()))
 	}
+	if err := metricsServer.Shutdown(shutdownCtx); err != nil {
+		logger.Error("metrics server graceful shutdown error", slog.String("error", err.Error()))
+	}
 	logger.Info("rag-kb-catalog-service stopped cleanly")
+	if exitCode != 0 {
+		os.Exit(exitCode)
+	}
 }
 
 func envOrDefault(key, fallback string) string {

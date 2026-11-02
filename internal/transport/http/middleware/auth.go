@@ -83,6 +83,9 @@ func AuthMiddleware(jwtSecret string, writeError func(w http.ResponseWriter, sta
 				writeError(w, http.StatusUnauthorized, "UNAUTHENTICATED", err.Error(), reqID)
 				return
 			}
+			if meta := RequestMetadataFromContext(r.Context()); meta != nil {
+				meta.TenantID = caller.TenantID
+			}
 			ctx := WithCallerIdentity(r.Context(), caller)
 			next.ServeHTTP(w, r.WithContext(ctx))
 		})

@@ -90,8 +90,14 @@ func (c *TriggerReindexingCommand) Execute(ctx context.Context, in dto.TriggerRe
 		TargetSchema:       migration.TargetSchema,
 	}); err != nil {
 		abortNow := time.Now().UTC()
-		if abortedKB, abortErr := c.repo.AbortReindexing(ctx, kb.TenantID, kb.KBID, kb.Version, "backfill workflow trigger failed", abortNow); abortErr == nil && c.cache != nil && abortedKB != nil {
-			_ = c.cache.PutVersion(ctx, abortedKB)
+		abortCtx, abortCancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer abortCancel()
+		abortedKB, abortErr := c.repo.AbortReindexing(abortCtx, kb.TenantID, kb.KBID, kb.Version, "backfill workflow trigger failed", abortNow)
+		if abortErr == nil && c.cache != nil && abortedKB != nil {
+			_ = c.cache.PutVersion(abortCtx, abortedKB)
+		}
+		if abortErr != nil {
+			return nil, fmt.Errorf("failed to trigger ingestion backfill workflow: %w (rollback failed: %v)", err, abortErr)
 		}
 		return nil, fmt.Errorf("failed to trigger ingestion backfill workflow: %w", err)
 	}

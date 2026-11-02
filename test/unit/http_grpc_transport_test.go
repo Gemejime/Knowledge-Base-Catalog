@@ -68,6 +68,7 @@ type testHarness struct {
 	repo       *postgres.InMemoryCatalogRepo
 	httpServer *httptest.Server
 	grpcClient catalogv1.CatalogServiceClient
+	metrics    *observability.Metrics
 	logBuf     *bytes.Buffer
 	cleanup    func()
 }
@@ -141,6 +142,7 @@ func newTestHarness(t *testing.T) *testHarness {
 		repo:       repo,
 		httpServer: httpSrv,
 		grpcClient: catalogv1.NewCatalogServiceClient(conn),
+		metrics:    metrics,
 		logBuf:     logBuf,
 		cleanup: func() {
 			_ = conn.Close()
@@ -199,7 +201,7 @@ func TestHTTPProbesDocAPIAndFullLifecycle(t *testing.T) {
 		}
 	}
 
-	// 1b. /metrics is protected with authentication on public router
+	// 1b. /metrics is removed from the public router (returns 404) and served exclusively via internal metrics router
 	reqMetrics, _ := http.NewRequest(http.MethodGet, h.httpServer.URL+"/metrics", nil)
 	reqMetrics.Header.Set("Authorization", "Bearer "+token)
 	respMetrics, err := http.DefaultClient.Do(reqMetrics)
@@ -207,8 +209,16 @@ func TestHTTPProbesDocAPIAndFullLifecycle(t *testing.T) {
 		t.Fatalf("GET /metrics failed: %v", err)
 	}
 	_ = respMetrics.Body.Close()
-	if respMetrics.StatusCode != http.StatusOK {
-		t.Fatalf("expected 200 OK from authenticated /metrics, got %d", respMetrics.StatusCode)
+	if respMetrics.StatusCode != http.StatusNotFound {
+		t.Fatalf("expected 404 NotFound from public router /metrics, got %d", respMetrics.StatusCode)
+	}
+
+	// Verify metrics endpoint works via dedicated NewMetricsRouter
+	metricsRecorder := httptest.NewRecorder()
+	metricsReq := httptest.NewRequest(http.MethodGet, "/metrics", nil)
+	httptransport.NewMetricsRouter(h.metrics).ServeHTTP(metricsRecorder, metricsReq)
+	if metricsRecorder.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK from internal NewMetricsRouter, got %d", metricsRecorder.Code)
 	}
 
 	// 2. Create Knowledge Base with Idempotency-Key

@@ -26,8 +26,33 @@ type routePatternContextKey struct{}
 // RoutePatternKey is the key instance used to store route patterns.
 var RoutePatternKey = routePatternContextKey{}
 
-// WithRoutePattern stores a bounded route pattern in the request context.
+// RequestMetadata holds mutable per-request telemetry metadata (route pattern, tenant ID)
+// shared across derived context boundaries.
+type RequestMetadata struct {
+	RoutePattern string
+	TenantID     string
+}
+
+type requestMetadataKey struct{}
+
+// WithRequestMetadata injects a mutable RequestMetadata holder into the context.
+func WithRequestMetadata(ctx context.Context, meta *RequestMetadata) context.Context {
+	return context.WithValue(ctx, requestMetadataKey{}, meta)
+}
+
+// RequestMetadataFromContext retrieves the mutable RequestMetadata holder from context.
+func RequestMetadataFromContext(ctx context.Context) *RequestMetadata {
+	if meta, ok := ctx.Value(requestMetadataKey{}).(*RequestMetadata); ok && meta != nil {
+		return meta
+	}
+	return nil
+}
+
+// WithRoutePattern stores a bounded route pattern in the request context and shared metadata holder.
 func WithRoutePattern(r *http.Request, pattern string) *http.Request {
+	if meta := RequestMetadataFromContext(r.Context()); meta != nil {
+		meta.RoutePattern = pattern
+	}
 	return r.WithContext(context.WithValue(r.Context(), RoutePatternKey, pattern))
 }
 
@@ -52,28 +77,36 @@ func LoggingAndMetricsMiddleware(logger *slog.Logger, metrics *observability.Met
 				ResponseWriter: w,
 				statusCode:     http.StatusOK,
 			}
+			meta := &RequestMetadata{}
+			reqWithMeta := r.WithContext(WithRequestMetadata(r.Context(), meta))
 
 			defer func() {
 				if recovered := recover(); recovered != nil {
 					rec.statusCode = http.StatusInternalServerError
 					if logger != nil {
 						logger.Error("http handler panic recovered",
-							slog.String("request_id", RequestIDFromContext(r.Context())),
-							slog.String("method", r.Method+" "+r.URL.Path),
+							slog.String("request_id", RequestIDFromContext(reqWithMeta.Context())),
+							slog.String("method", reqWithMeta.Method+" "+reqWithMeta.URL.Path),
 						)
 					}
 					http.Error(w, `{"code":"INTERNAL_ERROR","message":"internal server error"}`, http.StatusInternalServerError)
 				}
 
 				duration := time.Since(start)
-				caller, _ := CallerFromContext(r.Context())
-				tenantID := caller.TenantID
+				tenantID := meta.TenantID
+				if tenantID == "" {
+					caller, _ := CallerFromContext(reqWithMeta.Context())
+					tenantID = caller.TenantID
+				}
 				if tenantID == "" {
 					tenantID = "anonymous"
 				}
 
-				pattern := GetRoutePattern(r)
-				methodLabel := r.Method + " " + pattern
+				pattern := meta.RoutePattern
+				if pattern == "" {
+					pattern = GetRoutePattern(reqWithMeta)
+				}
+				methodLabel := reqWithMeta.Method + " " + pattern
 				statusStr := strconv.Itoa(rec.statusCode)
 
 				if metrics != nil {
@@ -83,17 +116,17 @@ func LoggingAndMetricsMiddleware(logger *slog.Logger, metrics *observability.Met
 
 				if logger != nil {
 					logger.Info("http request completed",
-						slog.String("request_id", RequestIDFromContext(r.Context())),
+						slog.String("request_id", RequestIDFromContext(reqWithMeta.Context())),
 						slog.String("tenant_id", tenantID),
 						slog.String("method", methodLabel),
-						slog.String("path", r.URL.Path),
+						slog.String("path", reqWithMeta.URL.Path),
 						slog.Int("status_code", rec.statusCode),
 						slog.Float64("duration_ms", float64(duration.Microseconds())/1000.0),
 					)
 				}
 			}()
 
-			next.ServeHTTP(rec, r)
+			next.ServeHTTP(rec, reqWithMeta)
 		})
 	}
 }
