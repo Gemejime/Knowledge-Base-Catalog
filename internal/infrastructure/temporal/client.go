@@ -195,3 +195,4 @@ func (a *slogTemporalAdapter) Warn(msg string, keyvals ...any) {
 func (a *slogTemporalAdapter) Error(msg string, keyvals ...any) {
 	a.logger.Error(msg, keyvals...)
 }
+
