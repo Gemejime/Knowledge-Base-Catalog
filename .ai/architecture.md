@@ -58,7 +58,7 @@ Aligned with the committed specifications in [`../.ai/`](../.ai/) (and the local
 
 ### Layer 3: Architecture & Scale
 13. **Asynchronous Task Queues, Workflows & CDC (`internal/infrastructure/temporal/client.go`)**:
-    - Heavy backfill and compaction jobs are never executed in-process; the catalog service commits the `REINDEXING` and `DUAL_WRITE` state and transactional outbox event to PostgreSQL before starting `TriggerBackfillDAG`. The workflow is triggered through a durable post-commit mechanism with retry and idempotency, and cache publication ensures it cannot read stale `GREEN_ONLY` routing. Outbox events are streamed asynchronously by Debezium to Apache Kafka.
+    - Heavy backfill and compaction jobs are never executed in-process; `TriggerReindexing` commits the `REINDEXING` and `DUAL_WRITE` state and transactional `ReindexInitiated` outbox event to PostgreSQL before workflow dispatch. Rather than treating request-scoped retries in `dispatchBackfillWithRetry` as sufficient, architectural guidance requires durable, persisted dispatch of `TriggerBackfillDAG` from the committed `ReindexInitiated` outbox event using an idempotent outbox/CDC consumer or equivalent mechanism that survives process crashes. Cache publication ensures readers cannot observe stale `GREEN_ONLY` routing, and outbox events are streamed asynchronously by Debezium to Apache Kafka.
 14. **High Availability & Redundancy (`deployments/helm/`)**:
     - Stateless Go replicas deployed with Kubernetes `PodDisruptionBudget` (`minAvailable: 2`), multi-AZ pod anti-affinity rules, and zero-downtime rolling updates.
 15. **Creational Design Patterns & Memory Pooling**:

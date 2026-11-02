@@ -13,7 +13,7 @@ Implement **Phase 3 (Weeks 5–6): Blue-Green State Machine & Ingestion Handshak
 2. **Temporal Go SDK Client Integration (`ingestion_trigger.go`)**:
    - Implement `internal/infrastructure/temporal/client.go` implementing `workflow.IngestionTrigger`.
    - Schedules asynchronous backfill DAG in `rag-ingestion-coordinator`.
-   - Fail-closed error handling and configurable retry policies.
+   - Fail-closed error handling with configurable, bounded retry settings on `temporal.Config` (initial interval, backoff coefficient, maximum interval, maximum attempts) wired from deployment configuration and constrained to supported bounds.
 3. **Atomic Write-Fence & Zero-Lag Promotion Gate (`ADR-002`)**:
    - Reads authoritative `delta_lag_records` from PostgreSQL `kb_migrations` (never trusting client assertion alone).
    - Blocks promotion if `delta_lag_records > 0`, returning `ErrDeltaLagNotZero` (HTTP `409 Conflict` / gRPC `codes.FailedPrecondition`).
@@ -33,6 +33,7 @@ Implement **Phase 3 (Weeks 5–6): Blue-Green State Machine & Ingestion Handshak
 - Wire gracefully in `cmd/catalog-service/main.go`.
 
 ### B. Delta Lag Reconciliation & Ingestion Coordination
+- Define the migration-progress update path in the workflow documentation: specify how the `rag-ingestion-coordinator` or ingestion workers authenticate and deliver updates to `CatalogRepository.UpdateMigrationProgress`, including the transport (internal gRPC or trusted worker repository access), while preserving strict promotion requirements for `delta_lag_records == 0`, `backfill_completed == true`, and `write_fence_drained == true`.
 - Provide application/infrastructure hooks to simulate or report delta lag updates from ingestion workers.
 - Verify `PromoteIndexPointer` OCC validation and lag threshold gate.
 - Verify `AbortReindexing` emits `ReindexAborted` event for outbox CDC streaming.

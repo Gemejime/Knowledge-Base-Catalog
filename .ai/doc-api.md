@@ -13,7 +13,7 @@
 
 ## 1. Documentation, Operational Probe & Administrative REST Endpoints (OpenAPI 3.1)
 
-The `rag-kb-catalog-service` runs an HTTP server (default port `8080`) serving OpenAPI 3.1 documentation, operational health/metrics probes, and administrative REST endpoints alongside the high-performance gRPC server (default port `50051`). All administrative `/v1/...` endpoints require Bearer JWT authentication (`bearerAuth`), and `tenant_id` is derived strictly from the verified caller JWT context (`sub` mapped to `user_id`, `tenant_id`, and `roles`), never trusted from unverified client request payloads:
+The `rag-kb-catalog-service` runs an HTTP server (default port `8080`) serving OpenAPI 3.1 documentation, operational health probes, and administrative REST endpoints alongside the high-performance gRPC server (default port `50051`) and an isolated internal metrics listener (default port `9090` via `METRICS_ADDR`). All administrative `/v1/...` endpoints require Bearer JWT authentication (`bearerAuth`), and `tenant_id` is derived strictly from the verified caller JWT context (`sub` mapped to `user_id`, `tenant_id`, and `roles`), never trusted from unverified client request payloads:
 
 | Endpoint | Method | Response Format | Description |
 | :--- | :--- | :--- | :--- |
@@ -23,7 +23,7 @@ The `rag-kb-catalog-service` runs an HTTP server (default port `8080`) serving O
 | `/openapi.json` | `GET` | `application/json` | Standard machine-readable OpenAPI 3.1 JSON specification |
 | `/healthz` | `GET` | `application/json` | Liveness probe returning `{"status": "healthy"}` |
 | `/ready` | `GET` | `application/json` | Readiness probe verifying PostgreSQL (`pgxpool` exec mode) and Redis 7.2 Cluster availability |
-| `/metrics` | `GET` | `text/plain` | Prometheus metrics scrape endpoint |
+| `/metrics` (internal `:9090`) | `GET` | `text/plain` | Prometheus metrics scrape endpoint on isolated internal listener |
 | `/v1/knowledge-bases` | `POST` | `application/json` | Create a new Knowledge Base (`CREATING` -> `ACTIVE`) with initial vector schema & taxonomy |
 | `/v1/knowledge-bases` | `GET` | `application/json` | List Knowledge Bases for a tenant filtered by hierarchical taxonomy tags (`namespace:key=value`) |
 | `/v1/knowledge-bases/{kb_id}` | `GET` | `application/json` | Get Knowledge Base metadata via direct Redis Cluster versioned read (`kb:{tenant_id}:{id}:v{ver}`) with DB fallback |
@@ -867,7 +867,7 @@ message KBResponse {
 - **Temporal Backfill Orchestration (`internal/infrastructure/temporal/client.go`)**:
   - Implements `workflow.IngestionTrigger` wrapping `go.temporal.io/sdk/client`.
   - Dispatches asynchronous backfill DAGs to `rag-ingestion-coordinator` with exponential retry policies.
-  - Fail-closed error handling: if Temporal workflow execution fails, `TriggerReindexing` rolls back the transition via `AbortReindexing`, retaining Green pointer stability.
+  - Fail-closed error handling: if errors are returned during workflow dispatch via `TriggerBackfillDAG`, `TriggerReindexing` rolls back the transition via `AbortReindexing`, retaining Green pointer stability. Failures occurring later in Temporal worker execution do not automatically trigger synchronous catalog rollback; worker failures remain observable via workflow telemetry and manual or automated reconciliation.
 
 ### C. Hierarchical Taxonomy Parser (`internal/domain/entity/taxonomy.go`)
 - Enforces standardized key-value namespace syntax (`namespace:key=value` or `namespace:value`, e.g., `env:production`, `compliance:hipaa`, `domain:finance`).

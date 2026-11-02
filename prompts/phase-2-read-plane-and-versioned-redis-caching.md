@@ -44,7 +44,7 @@ Implement **Phase 2 (Weeks 3–4): Read Plane & Versioned Redis Caching** for `r
 - Graceful connection pooling, bounded timeouts (context-aware), and ping check for `/ready`.
 
 ### B. Application Layer Integration (`internal/application/`)
-- Ensure all commands (`CreateKnowledgeBaseCommand`, `UpdateKnowledgeBaseCommand`, `TriggerReindexingCommand`, `PromotePointerCommand`, `AbortReindexingCommand`, `DeleteKnowledgeBaseCommand`) correctly populate/update `VersionedCache` with the newly settled entity state and incremented version post-commit.
+- Ensure cache publication in commands (`CreateKnowledgeBaseCommand`, `UpdateKnowledgeBaseCommand`, `TriggerReindexingCommand`, `PromotePointerCommand`, `AbortReindexingCommand`, `DeleteKnowledgeBaseCommand`) guarantees that `PutVersion` failures after successful database commit are not silently discarded: ensure failed publication is repaired durably or causes `GetKnowledgeBaseQuery` to read from the database until the cache is current, preventing stale cached metadata from being served.
 - Ensure `GetKnowledgeBaseQuery` and `ListKnowledgeBasesQuery` operate cleanly with the versioned cache.
 
 ### C. Server Wiring & Environment (`cmd/catalog-service/main.go`)

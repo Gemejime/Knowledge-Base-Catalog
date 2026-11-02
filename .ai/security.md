@@ -31,7 +31,7 @@
 
 ## 3. Secrets & Configuration Management (12-Factor App)
 
-- All environment-specific configurations and credentials (`DATABASE_URL`, `REDIS_CLUSTER_ADDRS`, `REDIS_PASSWORD`, `TEMPORAL_HOST`, `JWT_PUBLIC_KEY`) are injected via environment variables or secret store mounts.
+- All environment-specific configurations and credentials (`DATABASE_URL`, `REDIS_CLUSTER_ADDRS`, `REDIS_PASSWORD`, `TEMPORAL_HOST`, `JWT_HMAC_SECRET`) are injected via environment variables or secret store mounts.
 - `.env` files, private keys (`*.pem`, `*.key`), and the `tasks/` architectural reference folder are strictly excluded from version control via `.gitignore`.
 
 ---
