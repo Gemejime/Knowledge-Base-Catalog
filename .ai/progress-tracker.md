@@ -2,11 +2,11 @@
 
 ## Current Phase
 
-- **Phase 1: Core Schemas & Concurrency Controls** (🟢 Completed)
+- **Phase 2: Read Plane & Versioned Redis Caching** (🟢 Completed)
 
 ## Current Goal
 
-- Completed **Phase 1 (Weeks 1–2): Core Schemas & Concurrency Controls** (`000001_init_catalog_schema.up.sql`/`.down.sql`, pure hexagonal domain layer `internal/domain/`, application command/query use cases `internal/application/`, PgBouncer `QueryExecModeExec` PostgreSQL repository & transactional outbox `internal/infrastructure/`, OpenAPI 3.1 HTTP & Protobuf v3 gRPC transport layers `internal/transport/`, and unit/concurrency test suites `test/unit/`). Ready to begin **Phase 2: Read Plane & Versioned Redis Caching**.
+- Completed **Phase 2 (Weeks 3–4): Read Plane & Versioned Redis Caching** (Redis 7.2 Cluster versioned client, CRC16 `{tenant_id}` hash slot co-location, monotonic Lua pointer updates, `min_version` causal freshness cache-aside fallback, tombstone caching, dual-dependency `/ready` probe, and taxonomy query federation). Ready to begin **Phase 3: Migration State Machine & Ingestion Handshake**.
 
 ---
 
@@ -15,8 +15,8 @@
 | Phase | Duration | Core Domain Focus | Deliverables & Milestone Exit Criteria | Status |
 | :--- | :--- | :--- | :--- | :--- |
 | **Phase 1: Core Schemas & Concurrency Controls** | Weeks 1–2 | Relational Schemas & Optimistic Locking | • PostgreSQL 16 schema with strict `tenant_id` isolation, monotonic integer `version` columns, and `outbox_events` tables.<br>• Domain models enforcing immutable vector schema rules (`ErrStructuralMutationDisallowed`).<br>• gRPC (`catalog.proto`, `types.proto`) and OpenAPI 3.1 REST endpoints (`openapi.yaml`, `/docs`) with PgBouncer-compatible connection configuration (`default_query_exec_mode = exec`). | 🟢 Completed |
-| **Phase 2: Read Plane & Versioned Redis Caching** | Weeks 3–4 | Direct Cache Architecture & Taxonomy | • Direct Redis 7.2 Cluster cache reads using monotonic versioned keys (`kb:{tenant_id}:{id}:v{version}`) with 1-hour safety TTL and zero L1 invalidation buses.<br>• Hierarchical key-value taxonomy parser (`namespace:key=value`) supporting query federation.<br>• Unit and Testcontainers integration suites (PostgreSQL + Redis Cluster) verifying zero cache drift across updates. | 🟡 Ready to Start |
-| **Phase 3: Migration State Machine & Ingestion Handshake** | Weeks 5–6 | Blue-Green State Machine & Delta Protocol | • Re-indexing lifecycle state machine (`ACTIVE` -> `REINDEXING` -> `PROMOTED` / `ABORTED`) supporting `DUAL_WRITE` routing rules.<br>• Temporal Go SDK client trigger integration (`ingestion_trigger.go`) for launching external backfill DAGs in `rag-ingestion-coordinator`.<br>• Promotion validation (`PromoteIndexPointer`) gating switchover on shared ingestion write-fence drain and verified `0`-lag authoritative delta replay (`kb_catalog_migration_delta_lag_records == 0`). | ⚪ Planned |
+| **Phase 2: Read Plane & Versioned Redis Caching** | Weeks 3–4 | Direct Cache Architecture & Taxonomy | • Direct Redis 7.2 Cluster cache reads using monotonic versioned keys (`kb:{tenant_id}:{id}:v{version}`) with 1-hour safety TTL and zero L1 invalidation buses.<br>• Hierarchical key-value taxonomy parser (`namespace:key=value`) supporting query federation.<br>• Unit and Testcontainers integration suites (PostgreSQL + Redis Cluster) verifying zero cache drift across updates. | 🟢 Completed |
+| **Phase 3: Migration State Machine & Ingestion Handshake** | Weeks 5–6 | Blue-Green State Machine & Delta Protocol | • Re-indexing lifecycle state machine (`ACTIVE` -> `REINDEXING` -> `PROMOTED` / `ABORTED`) supporting `DUAL_WRITE` routing rules.<br>• Temporal Go SDK client trigger integration (`ingestion_trigger.go`) for launching external backfill DAGs in `rag-ingestion-coordinator`.<br>• Promotion validation (`PromoteIndexPointer`) gating switchover on shared ingestion write-fence drain and verified `0`-lag authoritative delta replay (`kb_catalog_migration_delta_lag_records == 0`). | 🟡 Ready to Start |
 | **Phase 4: CDC Verification, Chaos & Production Rollout** | Weeks 7–8 | Debezium Integration, Chaos & Load Tuning | • Verification of transactional outbox streaming (`KBCreated`, `KBUpdated`, `ReindexInitiated`, `PointerPromoted`, `ReindexAborted`, `KBDeleted`) via Debezium WAL capture to Apache Kafka.<br>• Chaos tests validating rollback to Green upon backfill failure or stalled delta buffers (`AbortReindexing`).<br>• Load benchmarking verifying $P99 \le 5\text{ms}$ reads and $P99 \le 20\text{ms}$ writes at 3,000 RPS within $\le 128\text{MiB}$ RSS per pod. | ⚪ Planned |
 
 ---
@@ -54,6 +54,19 @@
     - Implemented CRUD & Blue-Green migration commands/queries, `pgxpool` setup enforcing `pgx.QueryExecModeExec` (`default_query_exec_mode = exec`), transactional outbox repository, OCC disambiguation, `sync.Pool` buffer management, Prometheus telemetry, and secured `log/slog` JSON redaction.
   - **gRPC & OpenAPI 3.1 HTTP Transport + Unit/Concurrency Tests** ([`../api/proto/v1/`](../api/proto/v1/), [`../internal/transport/`](../internal/transport/), [`../cmd/catalog-service/main.go`](../cmd/catalog-service/main.go), [`../test/unit/`](../test/unit/)):
     - Implemented `CatalogService` gRPC server & auth/logging interceptors, HTTP REST & Doc API router (`/docs`, `/redoc`, `/api/docs`, `/openapi.json`, `/healthz`, `/ready`, `/metrics`), and unit/concurrency tests (including 20-goroutine OCC race verification).
+- **Phase 2: Read Plane & Versioned Redis Caching**:
+  - **Redis 7.2 Cluster Adapter & Versioned Caching** ([`../internal/infrastructure/cache/redis/cluster_client.go`](../internal/infrastructure/cache/redis/cluster_client.go), [`../internal/infrastructure/cache/redis/memory_cache.go`](../internal/infrastructure/cache/redis/memory_cache.go)):
+    - Implemented `ClusterClient` wrapping `redis.ClusterClient` with CRC16 `{tenant_id}` hash tag slot co-location (`kb:{tenant_id}:{kb_id}:v{version}` and `kb:{tenant_id}:{kb_id}:latest_version`), bounded 1-hour safety TTL, and atomic monotonic pointer advancement Lua script.
+    - Added thread-safe `InMemoryVersionedCache` test double and standalone development cache.
+  - **Causal Read Freshness & Tombstone Caching** ([`../internal/application/query/get_knowledge_base.go`](../internal/application/query/get_knowledge_base.go), [`../internal/application/command/delete_knowledge_base.go`](../internal/application/command/delete_knowledge_base.go)):
+    - `GetKnowledgeBaseQuery` enforces `min_version` causal freshness with automatic fallback to PostgreSQL and backfill on cache miss or stale version.
+    - Tombstone caching ensures soft-deleted entities cached at incremented version return `ErrKnowledgeBaseNotFound` without triggering database lookups.
+  - **Dual-Dependency Readiness Probe & Server Wiring** ([`../internal/transport/http/handler.go`](../internal/transport/http/handler.go), [`../cmd/catalog-service/main.go`](../cmd/catalog-service/main.go)):
+    - Updated `/ready` probe to evaluate both PostgreSQL connection pool and Redis Cluster ping, returning HTTP 200 with `status: ready`, `postgres: connected`, `redis_cluster: connected` when healthy, or HTTP 503 when either dependency fails.
+    - Wired `REDIS_CLUSTER_ADDRS` and `REDIS_PASSWORD` with secured logging redaction.
+  - **Unit Test Suites** ([`../test/unit/redis_cache_test.go`](../test/unit/redis_cache_test.go), [`../test/unit/taxonomy_federation_test.go`](../test/unit/taxonomy_federation_test.go)):
+    - Verified Redis Cluster CRC16 hash slot co-location invariants, monotonic Lua pointer updates, `min_version` fallback, tombstone caching, and dual-dependency `/ready` probe behavior.
+    - Comprehensive hierarchical taxonomy parsing, normalization, and query federation across multi-entity queries.
 
 ---
 
