@@ -462,6 +462,35 @@ func (r *CatalogRepo) getActiveMigrationQuery(ctx context.Context, q rowQuerier,
 	return &m, nil
 }
 
+// UpdateMigrationProgress updates authoritative delta_lag_records, backfill_completed, and write_fence_drained for an active migration.
+func (r *CatalogRepo) UpdateMigrationProgress(ctx context.Context, tenantID, kbID string, deltaLag uint64, backfillCompleted, writeFenceDrained bool) error {
+	t, err := requireTenant(tenantID)
+	if err != nil {
+		return err
+	}
+
+	const q = `
+		UPDATE kb_migrations
+		SET delta_lag_records = $3,
+		    backfill_completed = $4,
+		    write_fence_drained = $5,
+		    updated_at = $6
+		WHERE tenant_id = $1 AND kb_id = $2 AND state = 'REINDEXING'
+	`
+	tag, err := r.pool.Exec(ctx, q, t, kbID, deltaLag, backfillCompleted, writeFenceDrained, time.Now().UTC())
+	if err != nil {
+		return fmt.Errorf("failed to update migration progress: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return fmt.Errorf("%w: no active REINDEXING migration found for kb %s", entity.ErrInvalidStateTransition, kbID)
+	}
+
+	if r.metrics != nil {
+		r.metrics.MigrationDeltaLag.WithLabelValues(t, kbID).Set(float64(deltaLag))
+	}
+	return nil
+}
+
 // PromotePointer atomically verifies authoritative delta_lag_records == 0 in kb_migrations,
 // transitions REINDEXING -> PROMOTED -> ACTIVE under OCC, updates kb_migrations.state = 'PROMOTED',
 // and records PointerPromoted in outbox_events.
@@ -892,6 +921,31 @@ func NewInMemoryCatalogRepo(metrics *observability.Metrics) *InMemoryCatalogRepo
 
 func compositeKey(tenantID, id string) string {
 	return tenantID + ":" + id
+}
+
+// UpdateMigrationProgress updates authoritative delta_lag_records, backfill_completed, and write_fence_drained for an active migration.
+func (m *InMemoryCatalogRepo) UpdateMigrationProgress(_ context.Context, tenantID, kbID string, deltaLag uint64, backfillCompleted, writeFenceDrained bool) error {
+	t, err := requireTenant(tenantID)
+	if err != nil {
+		return err
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	mig, ok := m.migrations[compositeKey(t, kbID)]
+	if !ok || mig.State != entity.StateReindexing {
+		return fmt.Errorf("%w: no active REINDEXING migration found for kb %s", entity.ErrInvalidStateTransition, kbID)
+	}
+
+	mig.DeltaLagRecords = deltaLag
+	mig.BackfillCompleted = backfillCompleted
+	mig.WriteFenceDrained = writeFenceDrained
+	mig.UpdatedAt = time.Now().UTC()
+
+	if m.metrics != nil {
+		m.metrics.MigrationDeltaLag.WithLabelValues(t, kbID).Set(float64(deltaLag))
+	}
+	return nil
 }
 
 // SetMigrationDeltaLag updates the authoritative delta_lag_records on the active migration for testing ADR-002.

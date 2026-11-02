@@ -52,6 +52,9 @@ type CatalogRepository interface {
 	// GetActiveMigration retrieves the active (REINDEXING) migration record for (tenantID, kbID), including authoritative delta_lag_records.
 	GetActiveMigration(ctx context.Context, tenantID, kbID string) (*entity.KBMigration, error)
 
+	// UpdateMigrationProgress updates authoritative delta_lag_records, backfill_completed, and write_fence_drained for an active migration.
+	UpdateMigrationProgress(ctx context.Context, tenantID, kbID string, deltaLag uint64, backfillCompleted, writeFenceDrained bool) error
+
 	// PromotePointer atomically verifies authoritative delta_lag_records == 0 in kb_migrations, transitions REINDEXING -> PROMOTED -> ACTIVE under OCC,
 	// updates kb_migrations.state = 'PROMOTED', and records PointerPromoted in outbox_events.
 	PromotePointer(ctx context.Context, tenantID, kbID string, expectedVersion uint64, clientVerifiedLag *uint64, now time.Time) (*entity.KnowledgeBase, error)

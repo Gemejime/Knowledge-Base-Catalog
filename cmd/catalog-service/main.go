@@ -23,6 +23,7 @@ import (
 	rediscache "github.com/gemejime/rag-kb-catalog-service/internal/infrastructure/cache/redis"
 	"github.com/gemejime/rag-kb-catalog-service/internal/infrastructure/observability"
 	"github.com/gemejime/rag-kb-catalog-service/internal/infrastructure/persistence/postgres"
+	"github.com/gemejime/rag-kb-catalog-service/internal/infrastructure/temporal"
 	grpctransport "github.com/gemejime/rag-kb-catalog-service/internal/transport/grpc"
 	"github.com/gemejime/rag-kb-catalog-service/internal/transport/grpc/interceptors"
 	httptransport "github.com/gemejime/rag-kb-catalog-service/internal/transport/http"
@@ -101,7 +102,27 @@ func main() {
 		redisPinger = memCache
 	}
 
-	trigger := workflow.NewNoopIngestionTrigger()
+	var trigger workflow.IngestionTrigger
+	temporalHostPort := os.Getenv("TEMPORAL_HOST_PORT")
+	if strings.TrimSpace(temporalHostPort) != "" {
+		temporalNamespace := envOrDefault("TEMPORAL_NAMESPACE", "default")
+		temporalTaskQueue := envOrDefault("TEMPORAL_TASK_QUEUE", "rag-ingestion-backfill")
+		temporalClient, err := temporal.NewClient(temporal.Config{
+			HostPort:  temporalHostPort,
+			Namespace: temporalNamespace,
+			TaskQueue: temporalTaskQueue,
+		}, logger)
+		if err != nil {
+			logger.Error("failed to initialize temporal client, falling back to no-op trigger", slog.String("error", err.Error()))
+			trigger = workflow.NewNoopIngestionTrigger()
+		} else {
+			defer temporalClient.Close()
+			trigger = temporalClient
+		}
+	} else {
+		logger.Info("TEMPORAL_HOST_PORT not configured; using fail-closed noop ingestion trigger")
+		trigger = workflow.NewNoopIngestionTrigger()
+	}
 
 	createCmd := command.NewCreateKnowledgeBaseCommand(repo, cache)
 	updateCmd := command.NewUpdateKnowledgeBaseCommand(repo, cache)
