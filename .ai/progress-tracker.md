@@ -2,11 +2,11 @@
 
 ## Current Phase
 
-- **Phase 2: Read Plane & Versioned Redis Caching** (🟢 Completed)
+- **Phase 3: Migration State Machine & Ingestion Handshake** (🟢 Completed)
 
 ## Current Goal
 
-- Completed **Phase 2 (Weeks 3–4): Read Plane & Versioned Redis Caching** (Redis 7.2 Cluster versioned client, CRC16 `{tenant_id}` hash slot co-location, monotonic Lua pointer updates, `min_version` causal freshness cache-aside fallback, tombstone caching, dual-dependency `/ready` probe, and taxonomy query federation). Ready to begin **Phase 3: Migration State Machine & Ingestion Handshake**.
+- Completed **Phase 3 (Weeks 5–6): Migration State Machine & Ingestion Handshake** (Temporal Go SDK client adapter `internal/infrastructure/temporal/client.go`, authoritative progress reconciliation via `UpdateMigrationProgress`, zero-lag write-fence promotion gate, rollback abort handling with outbox cleanup events, and chaos resiliency test suite `test/chaos/migration_failure_test.go`). Ready to begin **Phase 4: CDC Verification, Chaos & Production Rollout**.
 
 ---
 
@@ -16,8 +16,8 @@
 | :--- | :--- | :--- | :--- | :--- |
 | **Phase 1: Core Schemas & Concurrency Controls** | Weeks 1–2 | Relational Schemas & Optimistic Locking | • PostgreSQL 16 schema with strict `tenant_id` isolation, monotonic integer `version` columns, and `outbox_events` tables.<br>• Domain models enforcing immutable vector schema rules (`ErrStructuralMutationDisallowed`).<br>• gRPC (`catalog.proto`, `types.proto`) and OpenAPI 3.1 REST endpoints (`openapi.yaml`, `/docs`) with PgBouncer-compatible connection configuration (`default_query_exec_mode = exec`). | 🟢 Completed |
 | **Phase 2: Read Plane & Versioned Redis Caching** | Weeks 3–4 | Direct Cache Architecture & Taxonomy | • Direct Redis 7.2 Cluster cache reads using monotonic versioned keys (`kb:{tenant_id}:{id}:v{version}`) with 1-hour safety TTL and zero L1 invalidation buses.<br>• Hierarchical key-value taxonomy parser (`namespace:key=value`) supporting query federation.<br>• Unit and Testcontainers integration suites (PostgreSQL + Redis Cluster) verifying zero cache drift across updates. | 🟢 Completed |
-| **Phase 3: Migration State Machine & Ingestion Handshake** | Weeks 5–6 | Blue-Green State Machine & Delta Protocol | • Re-indexing lifecycle state machine (`ACTIVE` -> `REINDEXING` -> `PROMOTED` / `ABORTED`) supporting `DUAL_WRITE` routing rules.<br>• Temporal Go SDK client trigger integration (`ingestion_trigger.go`) for launching external backfill DAGs in `rag-ingestion-coordinator`.<br>• Promotion validation (`PromoteIndexPointer`) gating switchover on shared ingestion write-fence drain and verified `0`-lag authoritative delta replay (`kb_catalog_migration_delta_lag_records == 0`). | 🟡 Ready to Start |
-| **Phase 4: CDC Verification, Chaos & Production Rollout** | Weeks 7–8 | Debezium Integration, Chaos & Load Tuning | • Verification of transactional outbox streaming (`KBCreated`, `KBUpdated`, `ReindexInitiated`, `PointerPromoted`, `ReindexAborted`, `KBDeleted`) via Debezium WAL capture to Apache Kafka.<br>• Chaos tests validating rollback to Green upon backfill failure or stalled delta buffers (`AbortReindexing`).<br>• Load benchmarking verifying $P99 \le 5\text{ms}$ reads and $P99 \le 20\text{ms}$ writes at 3,000 RPS within $\le 128\text{MiB}$ RSS per pod. | ⚪ Planned |
+| **Phase 3: Migration State Machine & Ingestion Handshake** | Weeks 5–6 | Blue-Green State Machine & Delta Protocol | • Re-indexing lifecycle state machine (`ACTIVE` -> `REINDEXING` -> `PROMOTED` / `ABORTED`) supporting `DUAL_WRITE` routing rules.<br>• Temporal Go SDK client trigger integration (`ingestion_trigger.go`) for launching external backfill DAGs in `rag-ingestion-coordinator`.<br>• Promotion validation (`PromoteIndexPointer`) gating switchover on shared ingestion write-fence drain and verified `0`-lag authoritative delta replay (`kb_catalog_migration_delta_lag_records == 0`). | 🟢 Completed |
+| **Phase 4: CDC Verification, Chaos & Production Rollout** | Weeks 7–8 | Debezium Integration, Chaos & Load Tuning | • Verification of transactional outbox streaming (`KBCreated`, `KBUpdated`, `ReindexInitiated`, `PointerPromoted`, `ReindexAborted`, `KBDeleted`) via Debezium WAL capture to Apache Kafka.<br>• Chaos tests validating rollback to Green upon backfill failure or stalled delta buffers (`AbortReindexing`).<br>• Load benchmarking verifying $P99 \le 5\text{ms}$ reads and $P99 \le 20\text{ms}$ writes at 3,000 RPS within $\le 128\text{MiB}$ RSS per pod. | 🟡 Ready to Start |
 
 ---
 
@@ -67,6 +67,15 @@
   - **Unit Test Suites** ([`../test/unit/redis_cache_test.go`](../test/unit/redis_cache_test.go), [`../test/unit/taxonomy_federation_test.go`](../test/unit/taxonomy_federation_test.go)):
     - Verified Redis Cluster CRC16 hash slot co-location invariants, monotonic Lua pointer updates, `min_version` fallback, tombstone caching, and dual-dependency `/ready` probe behavior.
     - Comprehensive hierarchical taxonomy parsing, normalization, and query federation across multi-entity queries.
+- **Phase 3: Migration State Machine & Ingestion Handshake**:
+  - **Temporal Go SDK Client Integration** ([`../internal/infrastructure/temporal/client.go`](../internal/infrastructure/temporal/client.go), [`../internal/infrastructure/temporal/client_test.go`](../internal/infrastructure/temporal/client_test.go)):
+    - Implemented `TemporalClient` wrapping `go.temporal.io/sdk/client` to execute `workflow.IngestionTrigger` contracts with retry policies, workflow timeouts, and secured structured `slog` JSON logging.
+    - Wired gracefully into `cmd/catalog-service/main.go` using `TEMPORAL_HOST_PORT`, `TEMPORAL_NAMESPACE`, and `TEMPORAL_TASK_QUEUE`, failing closed to `NoopIngestionTrigger` if unconfigured.
+  - **Authoritative Progress Reconciliation & Write-Fence Gate** ([`../internal/domain/repository/catalog_repository.go`](../internal/domain/repository/catalog_repository.go), [`../internal/infrastructure/persistence/postgres/catalog_repo.go`](../internal/infrastructure/persistence/postgres/catalog_repo.go)):
+    - Added `UpdateMigrationProgress` port to `CatalogRepository` implemented for both PostgreSQL 16 and in-memory test doubles, publishing to `kb_catalog_migration_delta_lag_records`.
+    - Enforced atomic promotion prerequisites: `delta_lag_records == 0`, `backfill_completed == true`, and `write_fence_drained == true`.
+  - **Chaos Testing & Failure Resiliency Suite** ([`../test/chaos/migration_failure_test.go`](../test/chaos/migration_failure_test.go)):
+    - Validated all 6 failure and edge scenarios: delta lag spike promotion block (`ErrDeltaLagNotZero`), worker crash rollback via `AbortReindexing` emitting `ReindexAborted` cleanup outbox event, concurrent OCC conflict handling (10 goroutines race with 1 success and 9 conflicts), Temporal dispatch failure automatic rollback, write-fence drain validation, and forbidden direct `REINDEXING` -> `ACTIVE` transitions.
 
 ---
 

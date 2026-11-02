@@ -861,6 +861,13 @@ message KBResponse {
 - **Aggregate Settlement After `PROMOTED` or `ABORTED`**:
   - When `PromoteIndexPointer` transitions the migration through `PROMOTED`, the migration record in `kb_migrations` is persisted as `PROMOTED`, `active_index_pointer` atomically switches to the Blue pointer, `active_schema` updates to `candidate_schema`, `candidate_index_pointer` is cleared, `routing_policy` resets to `GREEN_ONLY`, the KB operational state settles at `ACTIVE` (`version = version + 1`), and `PointerPromoted` is written to `outbox_events`.
   - When `AbortReindexing` transitions the migration through `ABORTED`, the migration record in `kb_migrations` is persisted as `ABORTED`, `active_index_pointer` remains locked to Green, `candidate_index_pointer` is cleared, `routing_policy` resets to `GREEN_ONLY`, the KB operational state resets to `ACTIVE` (`version = version + 1`), and `ReindexAborted` (cleanup event to purge the orphaned Blue index) is written to `outbox_events`.
+- **Authoritative Progress Reconciliation (`UpdateMigrationProgress`)**:
+  - Ingestion workers and coordinator services report authoritative backfill milestones and replay lag to PostgreSQL `kb_migrations` via `UpdateMigrationProgress(ctx, tenantID, kbID, deltaLag, backfillCompleted, writeFenceDrained)`.
+  - Sets `delta_lag_records`, `backfill_completed`, and `write_fence_drained` atomically while publishing the updated lag to the Prometheus gauge `kb_catalog_migration_delta_lag_records`.
+- **Temporal Backfill Orchestration (`internal/infrastructure/temporal/client.go`)**:
+  - Implements `workflow.IngestionTrigger` wrapping `go.temporal.io/sdk/client`.
+  - Dispatches asynchronous backfill DAGs to `rag-ingestion-coordinator` with exponential retry policies.
+  - Fail-closed error handling: if Temporal workflow execution fails, `TriggerReindexing` rolls back the transition via `AbortReindexing`, retaining Green pointer stability.
 
 ### C. Hierarchical Taxonomy Parser (`internal/domain/entity/taxonomy.go`)
 - Enforces standardized key-value namespace syntax (`namespace:key=value` or `namespace:value`, e.g., `env:production`, `compliance:hipaa`, `domain:finance`).
