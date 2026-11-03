@@ -277,3 +277,72 @@ jobs:
             echo "Chaos test directory not populated yet; skipping."
           fi
 
+      - name: Run Synthetic Load & Benchmark Suite
+        run: |
+          if [ -f "go.mod" ] && [ -d "test/benchmark" ]; then
+            echo "Running load benchmarks and quantile SLI tests..."
+            go test -v -run=^TestLoad ./test/benchmark/...
+            go test -v -bench=. -run=^Benchmark ./test/benchmark/...
+          else
+            echo "Benchmark directory not populated yet; skipping."
+          fi
+
+  # ---------------------------------------------------------------------------
+  # 5. Production Packaging, Docker & Helm Validation
+  # ---------------------------------------------------------------------------
+  packaging-and-helm-validation:
+    name: Packaging, Docker & Helm Validation
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Install Helm
+        uses: azure/setup-helm@v4
+        with:
+          version: "v3.16.2"
+
+      - name: Lint Helm Chart
+        run: |
+          if [ -d "deployments/helm/rag-kb-catalog-service" ]; then
+            echo "Linting Helm chart..."
+            helm lint deployments/helm/rag-kb-catalog-service
+          fi
+
+      - name: Verify ArgoCD Manifest Syntactic Validity
+        run: |
+          if [ -f "deployments/argocd/application.yaml" ]; then
+            python3 -c '
+            import yaml
+            with open("deployments/argocd/application.yaml") as f:
+                app = yaml.safe_load(f)
+            assert app.get("kind") == "Application"
+            assert app.get("apiVersion") == "argoproj.io/v1alpha1"
+            print("ArgoCD Application manifest is valid YAML!")
+            '
+          fi
+
+      - name: Verify Debezium Connector Configuration Syntactic Validity
+        run: |
+          if [ -f "deployments/debezium/register-postgres-outbox-connector.json" ]; then
+            python3 -c '
+            import json
+            with open("deployments/debezium/register-postgres-outbox-connector.json") as f:
+                cfg = json.load(f)
+            assert cfg.get("name") == "rag-kb-catalog-outbox-connector"
+            assert "config" in cfg
+            print("Debezium connector JSON is valid!")
+            '
+          fi
+
+      - name: Verify Distroless Docker Build
+        run: |
+          if [ -f "deployments/docker/Dockerfile" ]; then
+            echo "Building Docker container image..."
+            docker build -f deployments/docker/Dockerfile -t rag-kb-catalog-service:ci .
+          fi
+
+
