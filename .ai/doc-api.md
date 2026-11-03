@@ -1006,8 +1006,100 @@ CREATE TABLE IF NOT EXISTS idempotency_keys (
 | `kb_catalog_migration_delta_lag_records` | Gauge | `tenant`, `kb_id` | Outstanding delta write backlog before Blue-Green cutover (aliased as `kb_migration_delta_lag_records` in Runbook 1) |
 | `kb_catalog_active_migrations` | Gauge | `tenant` | Currently active Blue-Green migrations in `REINDEXING` state |
 
-### Production Alert Rules
-1. **High Mutation Conflict Rate**: Triggers if optimistic conflicts (`kb_catalog_optimistic_conflicts_total`) exceed `5%` of write traffic over a 5-minute period.
-2. **P99 Read Latency Degradation**: Triggers if Redis direct read $P99$ latency exceeds `10ms` for `> 3 minutes`.
-3. **Re-Index Convergence Stall**: Triggers if an active migration remains in `REINDEXING` with delta buffer lag $> 0$ without decrease for `> 15 minutes`.
-4. **Database Pool Saturation**: Triggers if active PgBouncer connections exceed `85%` of pool capacity for `> 2 minutes`.
+### Production Alert Rules Matrix
+
+| Alert Name | Severity | Duration | PromQL Expression | Threshold / Condition |
+| :--- | :--- | :--- | :--- | :--- |
+| **HighMutationConflictRate** | `warning` | `5m` | `sum(rate(kb_catalog_optimistic_conflicts_total[5m])) / sum(rate(kb_catalog_requests_total{method=~"Update.*\|Trigger.*\|Promote.*\|Abort.*\|Delete.*"}[5m])) > 0.05` | OCC conflict rate > 5% of mutation traffic over 5m |
+| **P99ReadLatencyDegradation** | `warning` | `3m` | `histogram_quantile(0.99, sum(rate(kb_catalog_request_duration_seconds_bucket{method="GetKnowledgeBase"}[3m])) by (le)) > 0.010` | P99 direct read latency > 10ms for 3m (SLO: <= 5ms) |
+| **ReindexConvergenceStall** | `critical` | `15m` | `kb_catalog_migration_delta_lag_records > 0 and (deriv(kb_catalog_migration_delta_lag_records[15m]) >= 0)` | Migration delta buffer lag > 0 without decrease for 15m |
+| **DatabasePoolSaturation** | `critical` | `2m` | `(pgx_pool_acquired_conns / pgx_pool_max_conns) > 0.85` | PostgreSQL pgx connection pool utilization > 85% for 2m |
+
+---
+
+## 6. Transactional CDC Outbox & Debezium Kafka Connect Architecture (ADR-005)
+
+### Debezium Outbox Connector Specification (`deployments/debezium/register-postgres-outbox-connector.json`)
+- **Connector Name**: `rag-kb-catalog-outbox-connector`
+- **Connector Class**: `io.debezium.connector.postgresql.PostgresConnector`
+- **Plugin Name**: `pgoutput`
+- **Replication Slot**: `rag_kb_debezium_slot` (`slot.drop.on.stop: false`)
+- **Publication**: `rag_kb_outbox_publication` (`publication.autocreate.mode: filtered`)
+- **Tailed Table**: `public.outbox_events`
+- **Outbox EventRouter SMT**: `io.debezium.transforms.outbox.EventRouter`
+  - `transforms.outbox.table.field.event.id`: `event_id`
+  - `transforms.outbox.table.field.event.key`: `tenant_id` (Ensures per-tenant partition FIFO ordering without topic explosion)
+  - `transforms.outbox.table.field.event.type`: `event_type`
+  - `transforms.outbox.table.field.event.timestamp`: `created_at`
+  - `transforms.outbox.table.field.event.payload`: `payload`
+  - `transforms.outbox.table.expand.json.payload`: `true`
+  - `transforms.outbox.route.topic.regex`: `.*`
+  - `transforms.outbox.route.topic.replacement`: `rag.catalog.events`
+  - `transforms.outbox.table.fields.additional.placement`: `event_type:header:eventType,aggregate_version:header:aggregateVersion,tenant_id:header:tenantId`
+
+### Kafka Routing Contract
+- **Target Topic**: `rag.catalog.events`
+- **Message Key**: `tenant_id` (guarantees strict causal ordering for all operations within a tenant across partitions)
+- **Record Headers**:
+  - `eventType`: `"KBCreated"` | `"KBUpdated"` | `"ReindexInitiated"` | `"PointerPromoted"` | `"ReindexAborted"` | `"KBDeleted"`
+  - `aggregateVersion`: uint64 monotonic version (e.g. `"1"`, `"2"`, `"3"`)
+  - `tenantId`: string tenant identifier
+
+### Domain Event Payload Specifications
+All 6 domain event payloads contain authoritative aggregate snapshots expanded from JSON payloads:
+
+1. **`KBCreated`**:
+   ```json
+   {
+     "event_id": "3fa85f64-5717-4562-b3fc-2c963f66afa6",
+     "event_type": "KBCreated",
+     "tenant_id": "tenant-corp-123",
+     "kb_id": "kb-01h45y...",
+     "name": "Finance Analytics Docs",
+     "version": 1,
+     "state": "ACTIVE",
+     "routing_policy": "GREEN_ONLY",
+     "active_index_pointer": "idx_kb_01h45y_v1",
+     "candidate_index_pointer": "",
+     "active_schema": {
+       "embedding_model": "text-embedding-3-small",
+       "dimensions": 1536,
+       "distance_metric": "COSINE",
+       "schema_version": "v1.0"
+     },
+     "candidate_schema": null,
+     "taxonomy_tags": ["env:production", "dept:finance"],
+     "occurred_at": "2026-11-03T10:00:00.000000000Z"
+   }
+   ```
+2. **`KBUpdated`**:
+   Same envelope as `KBCreated` with incremented `version`, updated `name`, `description`, `retrieval_profile`, or `taxonomy_tags`. Structural vector schema fields remain unchanged.
+3. **`ReindexInitiated`**:
+   Contains active schema alongside candidate Blue configuration and orchestration identifiers:
+   - `migration_id`: string UUID
+   - `source_green_pointer`: current active index pointer
+   - `target_blue_pointer`: candidate index pointer allocated for Blue backfill
+   - `temporal_workflow_id`: workflow execution ID dispatched to `rag-ingestion-coordinator`
+   - `routing_policy`: `"DUAL_WRITE"`
+   - `state`: `"REINDEXING"`
+4. **`PointerPromoted`**:
+   Emitted upon atomic cutover after write-fence quiescence and zero-lag validation:
+   - `migration_id`: string UUID
+   - `retired_green_pointer`: prior active Green index pointer
+   - `promoted_blue_pointer`: promoted Blue index pointer now serving active search
+   - `verified_delta_lag`: `0`
+   - `routing_policy`: `"GREEN_ONLY"`
+   - `state`: `"ACTIVE"`
+5. **`ReindexAborted`**:
+   Emitted on backfill failure or operator abort to trigger downstream orphan cleanup:
+   - `migration_id`: string UUID
+   - `orphaned_blue_pointer`: staging Blue index pointer to be purged
+   - `abort_reason`: string diagnostic description
+   - `routing_policy`: `"GREEN_ONLY"`
+   - `state`: `"ACTIVE"`
+6. **`KBDeleted`**:
+   Emitted on soft-delete (`TOMBSTONED`):
+   - `candidate_index_pointer`: candidate Blue pointer (if an active migration was running)
+   - `active_migrations_cancelled`: count of active migrations aborted (`0` or `1`)
+   - `state`: `"TOMBSTONED"`
+

@@ -1,0 +1,130 @@
+# Default values for rag-kb-catalog-service.
+# Declares HA configuration, PSS: restricted pod security, and Prometheus alerts.
+
+replicaCount: 3
+
+image:
+  repository: rag-kb-catalog-service
+  pullPolicy: IfNotPresent
+  tag: "1.0.0"
+
+imagePullSecrets: []
+nameOverride: ""
+fullnameOverride: ""
+
+serviceAccount:
+  create: true
+  automount: true
+  annotations: {}
+  name: ""
+
+podAnnotations:
+  prometheus.io/scrape: "true"
+  prometheus.io/port: "9090"
+  prometheus.io/path: "/metrics"
+
+podLabels: {}
+
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 65532
+  runAsGroup: 65532
+  fsGroup: 65532
+  seccompProfile:
+    type: RuntimeDefault
+
+securityContext:
+  readOnlyRootFilesystem: true
+  allowPrivilegeEscalation: false
+  capabilities:
+    drop:
+      - ALL
+  seccompProfile:
+    type: RuntimeDefault
+
+service:
+  type: ClusterIP
+  ports:
+    http: 8080
+    grpc: 50051
+    metrics: 9090
+  annotations:
+    prometheus.io/scrape: "true"
+    prometheus.io/port: "9090"
+    prometheus.io/path: "/metrics"
+
+resources:
+  requests:
+    cpu: 100m
+    memory: 64Mi
+  limits:
+    cpu: 500m
+    memory: 128Mi
+
+probes:
+  liveness:
+    httpGet:
+      path: /healthz
+      port: 8080
+    initialDelaySeconds: 5
+    periodSeconds: 10
+    timeoutSeconds: 2
+    failureThreshold: 3
+  readiness:
+    httpGet:
+      path: /ready
+      port: 8080
+    initialDelaySeconds: 5
+    periodSeconds: 5
+    timeoutSeconds: 2
+    failureThreshold: 3
+
+podDisruptionBudget:
+  enabled: true
+  minAvailable: 2
+
+affinity:
+  podAntiAffinity:
+    preferredDuringSchedulingIgnoredDuringExecution:
+      - weight: 100
+        podAffinityTerm:
+          labelSelector:
+            matchExpressions:
+              - key: app.kubernetes.io/name
+                operator: In
+                values:
+                  - rag-kb-catalog-service
+          topologyKey: topology.kubernetes.io/zone
+
+nodeSelector: {}
+tolerations: []
+
+env:
+  ENVIRONMENT: production
+  LOG_LEVEL: info
+  HTTP_PORT: "8080"
+  GRPC_PORT: "50051"
+  METRICS_PORT: "9090"
+  POSTGRES_HOST: "postgres-cluster.database.svc.cluster.local"
+  POSTGRES_PORT: "5432"
+  POSTGRES_DB: "rag_catalog"
+  POSTGRES_USER: "rag_catalog_user"
+  POSTGRES_SSLMODE: "verify-full"
+  POSTGRES_MAX_CONNS: "50"
+  POSTGRES_MIN_CONNS: "10"
+  REDIS_CLUSTER_ADDRS: "redis-cluster-node-0.redis:6379,redis-cluster-node-1.redis:6379,redis-cluster-node-2.redis:6379"
+  TEMPORAL_HOST_PORT: "temporal-frontend.temporal.svc.cluster.local:7233"
+  TEMPORAL_NAMESPACE: "rag-ingestion"
+  TEMPORAL_TASK_QUEUE: "rag-ingestion-v1"
+
+secrets:
+  postgresPassword: "change-me-postgres-password"
+  redisPassword: "change-me-redis-password"
+  jwtHmacSecret: "change-me-at-least-32-bytes-long-jwt-hmac-secret-key"
+
+prometheusRule:
+  enabled: true
+  additionalLabels:
+    role: alert-rules
+    prometheus: k8s
+

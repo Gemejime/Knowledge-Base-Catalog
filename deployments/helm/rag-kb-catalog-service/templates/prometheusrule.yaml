@@ -1,0 +1,55 @@
+{{- if .Values.prometheusRule.enabled -}}
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: {{ include "rag-kb-catalog-service.fullname" . }}-alerts
+  labels:
+    {{- include "rag-kb-catalog-service.labels" . | nindent 4 }}
+    {{- with .Values.prometheusRule.additionalLabels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  groups:
+    - name: rag-kb-catalog-service.rules
+      rules:
+        - alert: HighMutationConflictRate
+          expr: sum(rate(kb_catalog_optimistic_conflicts_total[5m])) / sum(rate(kb_catalog_requests_total{method=~"Update.*|Trigger.*|Promote.*|Abort.*|Delete.*"}[5m])) > 0.05
+          for: 5m
+          labels:
+            severity: warning
+            service: {{ include "rag-kb-catalog-service.name" . }}
+          annotations:
+            summary: "High OCC mutation conflict rate detected (>5%)"
+            description: "Tenant mutation conflict rate exceeds 5% of mutation traffic over the last 5 minutes. Check for concurrent uncoordinated writes."
+
+        - alert: P99ReadLatencyDegradation
+          expr: histogram_quantile(0.99, sum(rate(kb_catalog_request_duration_seconds_bucket{method="GetKnowledgeBase"}[3m])) by (le)) > 0.010
+          for: 3m
+          labels:
+            severity: warning
+            service: {{ include "rag-kb-catalog-service.name" . }}
+          annotations:
+            summary: "P99 read latency degradation (>10ms)"
+            description: "P99 direct-cache read latency for GetKnowledgeBase exceeded 10ms for more than 3 minutes (SLO: <= 5ms). Investigate Redis Cluster load or network latency."
+
+        - alert: ReindexConvergenceStall
+          expr: kb_catalog_migration_delta_lag_records > 0 and (deriv(kb_catalog_migration_delta_lag_records[15m]) >= 0)
+          for: 15m
+          labels:
+            severity: critical
+            service: {{ include "rag-kb-catalog-service.name" . }}
+          annotations:
+            summary: "Re-index migration convergence stall"
+            description: "Migration delta replay buffer lag remains >0 without decreasing for 15 minutes. Ingestion replay worker may have stalled or crashed."
+
+        - alert: DatabasePoolSaturation
+          expr: (pgx_pool_acquired_conns / pgx_pool_max_conns) > 0.85
+          for: 2m
+          labels:
+            severity: critical
+            service: {{ include "rag-kb-catalog-service.name" . }}
+          annotations:
+            summary: "Database connection pool saturation (>85%)"
+            description: "PostgreSQL pgx connection pool utilization exceeded 85% for more than 2 minutes. Check for slow transactions or connection leaks."
+{{- end }}
+

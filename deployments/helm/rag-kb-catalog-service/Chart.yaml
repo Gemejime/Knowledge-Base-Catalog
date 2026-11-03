@@ -1,0 +1,17 @@
+apiVersion: v2
+name: rag-kb-catalog-service
+description: High-Availability Helm Chart for RAG Knowledge Base Catalog Service (Go 1.23+)
+type: application
+version: 0.1.0
+appVersion: "1.0.0"
+maintainers:
+  - name: rag-kb-team
+    email: catalog-service-dev@internal.rag
+keywords:
+  - rag
+  - knowledge-base
+  - catalog
+  - vector-schema
+  - grpc
+  - debezium
+

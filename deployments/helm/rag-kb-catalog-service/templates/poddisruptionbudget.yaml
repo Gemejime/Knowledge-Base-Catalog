@@ -1,0 +1,14 @@
+{{- if .Values.podDisruptionBudget.enabled -}}
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "rag-kb-catalog-service.fullname" . }}-pdb
+  labels:
+    {{- include "rag-kb-catalog-service.labels" . | nindent 4 }}
+spec:
+  minAvailable: {{ .Values.podDisruptionBudget.minAvailable }}
+  selector:
+    matchLabels:
+      {{- include "rag-kb-catalog-service.selectorLabels" . | nindent 6 }}
+{{- end }}
+

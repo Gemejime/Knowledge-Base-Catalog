@@ -758,11 +758,13 @@ func (r *CatalogRepo) SoftDelete(ctx context.Context, tenantID, kbID string, exp
 		}
 	}
 
-	var extraPayload map[string]any
-	if capturedCandidate != "" {
-		extraPayload = map[string]any{
-			"candidate_index_pointer": capturedCandidate,
-		}
+	cancelledCount := 0
+	if wasReindexing {
+		cancelledCount = 1
+	}
+	extraPayload := map[string]any{
+		"candidate_index_pointer":     capturedCandidate,
+		"active_migrations_cancelled": cancelledCount,
 	}
 
 	outboxEvt, err := event.NewOutboxEvent(kb, event.EventKBDeleted, extraPayload, now)
@@ -1121,9 +1123,11 @@ func (m *InMemoryCatalogRepo) UpdateMetadata(_ context.Context, kb *entity.Knowl
 		}
 		return fmt.Errorf("%w: expected version %d, actual %d", entity.ErrVersionConflict, expectedVersion, existing.Version)
 	}
-	for _, other := range m.kbs {
-		if other.TenantID == t && other.KBID != kb.KBID && other.Name == kb.Name && other.State != entity.StateTombstoned {
-			return fmt.Errorf("%w: %s", entity.ErrDuplicateKBName, kb.Name)
+	if kb.Name != existing.Name {
+		for _, other := range m.kbs {
+			if other.TenantID == t && other.KBID != kb.KBID && other.Name == kb.Name && other.State != entity.StateTombstoned {
+				return fmt.Errorf("%w: %s", entity.ErrDuplicateKBName, kb.Name)
+			}
 		}
 	}
 
@@ -1336,11 +1340,13 @@ func (m *InMemoryCatalogRepo) SoftDelete(_ context.Context, tenantID, kbID strin
 		return nil, err
 	}
 
-	var extraPayload map[string]any
-	if capturedCandidate != "" {
-		extraPayload = map[string]any{
-			"candidate_index_pointer": capturedCandidate,
-		}
+	cancelledCount := 0
+	if wasReindexing {
+		cancelledCount = 1
+	}
+	extraPayload := map[string]any{
+		"candidate_index_pointer":     capturedCandidate,
+		"active_migrations_cancelled": cancelledCount,
 	}
 
 	outboxEvt, err := event.NewOutboxEvent(kbCopy, event.EventKBDeleted, extraPayload, now)
