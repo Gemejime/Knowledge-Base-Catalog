@@ -109,6 +109,11 @@
   - **Tooling & CI/CD Updates** ([`../Makefile`](../Makefile), [`../.github/workflows/ci.yml`](../.github/workflows/ci.yml)):
     - Added `bench`, `bench-load`, and `helm-lint` Makefile targets.
     - Updated GitHub Actions CI/CD pipeline with Helm chart validation, Docker container build verification, and benchmark execution.
+  - **Dynamic Environment Configuration & .env Synchronization** ([`../internal/infrastructure/config/`](../internal/infrastructure/config/), [`../.env.example`](../.env.example)):
+    - Designed zero-dependency `internal/infrastructure/config` package with automatic POSIX `.env` parsing, upward repository root traversal, and type-safe configuration loading (`Config`, `PostgresConfig`, `RedisConfig`, `TemporalConfig`).
+    - Enforced that modifications to `.env` dynamically mutate the process environment (`os.Setenv`) and configure all server listeners, log levels, database pools, caches, and workflow triggers without manual shell exports.
+    - Documented comprehensive `.env.example` defining all operational parameters across networking, logging, JWT authentication, PostgreSQL with PgBouncer tuning, Redis 7.2 Cluster, and Temporal backfill workers.
+
 
 
 ---

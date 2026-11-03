@@ -1103,3 +1103,40 @@ All 6 domain event payloads contain authoritative aggregate snapshots expanded f
    - `active_migrations_cancelled`: count of active migrations aborted (`0` or `1`)
    - `state`: `"TOMBSTONED"`
 
+---
+
+## 7. Configuration & Environment Variable Contracts (`.env` & `.env.example`)
+
+The service provides dynamic configuration loading via `internal/infrastructure/config`. On startup, it automatically searches for `.env` files in the current working directory and parent paths up to the project root. Any values defined in `.env` are parsed and applied to the process environment (`os.Setenv`), ensuring that modifications to `.env` immediately take effect upon microservice restart or test invocation.
+
+All configurable settings are declared and documented in [`.env.example`](../.env.example):
+
+| Variable | Type | Default | Description |
+| :--- | :--- | :--- | :--- |
+| `ENVIRONMENT` | string | `development` | Runtime deployment environment (`development`, `staging`, `production`, `test`). |
+| `LOG_LEVEL` | string | `info` | Structured `log/slog` logging verbosity (`debug`, `info`, `warn`, `error`). |
+| `HTTP_ADDR` | string | `:8080` | Public REST and OpenAPI documentation listener address (`host:port` or `:port`). |
+| `HTTP_PORT` | string | `8080` | Fallback port number if `HTTP_ADDR` is omitted. |
+| `GRPC_ADDR` | string | `:50051` | High-performance gRPC HTTP/2 listener address (`host:port` or `:port`). |
+| `GRPC_PORT` | string | `50051` | Fallback port number if `GRPC_ADDR` is omitted. |
+| `METRICS_ADDR` | string | `:9090` | Isolated internal Prometheus metrics scrape endpoint listener address. |
+| `METRICS_PORT` | string | `9090` | Fallback port number if `METRICS_ADDR` is omitted. |
+| `JWT_HMAC_SECRET` | string | *(Required)* | Secret key for verifying Bearer JWT tokens. Minimum 32 bytes (256-bit entropy). |
+| `DATABASE_URL` | string | `""` | Full PostgreSQL DSN. Takes precedence over modular `POSTGRES_*` settings. Falls back to in-memory repository when empty. |
+| `POSTGRES_HOST` | string | `localhost` | PostgreSQL host for modular DSN generation. |
+| `POSTGRES_PORT` | string | `5432` | PostgreSQL port for modular DSN generation. |
+| `POSTGRES_DB` | string | `rag_catalog` | PostgreSQL database name. |
+| `POSTGRES_USER` | string | `rag_catalog_user` | PostgreSQL connection username. |
+| `POSTGRES_PASSWORD` | string | `""` | PostgreSQL connection password. |
+| `POSTGRES_SSLMODE` | string | `disable` | SSL mode (`disable`, `require`, `verify-full`). |
+| `POSTGRES_MAX_CONNS` | int32 | `25` | Maximum active PgBouncer-compatible connection pool size. |
+| `POSTGRES_MIN_CONNS` | int32 | `5` | Minimum idle connection pool size. |
+| `POSTGRES_MAX_CONN_LIFETIME` | duration | `30m` | Maximum connection reuse duration. |
+| `POSTGRES_MAX_CONN_IDLE_TIME` | duration | `5m` | Maximum connection idle timeout. |
+| `REDIS_CLUSTER_ADDRS` | string | `""` | Comma-separated Redis Cluster node endpoints. Falls back to thread-safe in-memory cache when empty. |
+| `REDIS_PASSWORD` | string | `""` | Authentication password for Redis Cluster nodes. |
+| `TEMPORAL_HOST_PORT` | string | `""` | Temporal frontend target. Falls back to no-op trigger when empty. |
+| `TEMPORAL_NAMESPACE` | string | `rag-ingestion` | Temporal namespace for migration workflows. |
+| `TEMPORAL_TASK_QUEUE` | string | `rag-ingestion-backfill` | Temporal task queue for backfill ingestion activities. |
+
+
