@@ -8,7 +8,6 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
-	"strings"
 	"syscall"
 	"time"
 
@@ -22,6 +21,7 @@ import (
 	"github.com/gemejime/rag-kb-catalog-service/internal/application/workflow"
 	"github.com/gemejime/rag-kb-catalog-service/internal/domain/repository"
 	rediscache "github.com/gemejime/rag-kb-catalog-service/internal/infrastructure/cache/redis"
+	"github.com/gemejime/rag-kb-catalog-service/internal/infrastructure/config"
 	"github.com/gemejime/rag-kb-catalog-service/internal/infrastructure/observability"
 	"github.com/gemejime/rag-kb-catalog-service/internal/infrastructure/persistence/postgres"
 	"github.com/gemejime/rag-kb-catalog-service/internal/infrastructure/temporal"
@@ -31,21 +31,26 @@ import (
 )
 
 func main() {
-	logger := observability.NewJSONLogger(os.Stdout, slog.LevelInfo)
+	cfg, err := config.Load()
+	if err != nil {
+		logger := observability.NewJSONLogger(os.Stdout, slog.LevelError)
+		logger.Error("configuration loading failed", slog.String("error", err.Error()))
+		os.Exit(1)
+	}
+
+	logger := observability.NewJSONLogger(os.Stdout, cfg.LogLevel)
 	slog.SetDefault(logger)
+
+	logger.Info("starting rag-kb-catalog-service",
+		slog.String("environment", cfg.Environment),
+		slog.String("log_level", cfg.LogLevel.String()),
+		slog.String("http_addr", cfg.HTTPAddr),
+		slog.String("grpc_addr", cfg.GRPCAddr),
+		slog.String("metrics_addr", cfg.MetricsAddr),
+	)
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
-
-	httpAddr := envOrDefault("HTTP_ADDR", ":8080")
-	grpcAddr := envOrDefault("GRPC_ADDR", ":50051")
-	metricsAddr := envOrDefault("METRICS_ADDR", ":9090")
-	dbURL := os.Getenv("DATABASE_URL")
-	jwtSecret := os.Getenv("JWT_HMAC_SECRET")
-	if strings.TrimSpace(jwtSecret) == "" {
-		logger.Error("startup aborted: JWT_HMAC_SECRET environment variable is required")
-		os.Exit(1)
-	}
 
 	metrics := observability.NewMetrics(nil)
 
@@ -54,8 +59,8 @@ func main() {
 		dbPool *pgxpool.Pool
 	)
 
-	if dbURL != "" {
-		pool, err := postgres.NewPool(ctx, postgres.PoolConfig{DSN: dbURL})
+	if cfg.Postgres.DSN != "" {
+		pool, err := postgres.NewPool(ctx, cfg.Postgres.PoolConfig())
 		if err != nil {
 			logger.Error("failed to initialize postgresql pool", slog.String("error", err.Error()))
 			os.Exit(1)
@@ -73,22 +78,10 @@ func main() {
 		redisPinger interface{ Ping(context.Context) error }
 	)
 
-	redisAddrsEnv := os.Getenv("REDIS_CLUSTER_ADDRS")
-	redisPassword := os.Getenv("REDIS_PASSWORD")
-
-	if strings.TrimSpace(redisAddrsEnv) != "" {
-		rawAddrs := strings.Split(redisAddrsEnv, ",")
-		var cleanedAddrs []string
-		for _, addr := range rawAddrs {
-			trimmed := strings.TrimSpace(addr)
-			if trimmed != "" {
-				cleanedAddrs = append(cleanedAddrs, trimmed)
-			}
-		}
-
+	if len(cfg.Redis.Addrs) > 0 {
 		clusterClient, err := rediscache.NewClusterClient(ctx, rediscache.Config{
-			Addrs:    cleanedAddrs,
-			Password: redisPassword,
+			Addrs:    cfg.Redis.Addrs,
+			Password: cfg.Redis.Password,
 		}, logger)
 		if err != nil {
 			logger.Error("failed to initialize redis cluster client", slog.String("error", err.Error()))
@@ -105,14 +98,11 @@ func main() {
 	}
 
 	var trigger workflow.IngestionTrigger
-	temporalHostPort := os.Getenv("TEMPORAL_HOST_PORT")
-	if strings.TrimSpace(temporalHostPort) != "" {
-		temporalNamespace := envOrDefault("TEMPORAL_NAMESPACE", "default")
-		temporalTaskQueue := envOrDefault("TEMPORAL_TASK_QUEUE", "rag-ingestion-backfill")
+	if cfg.Temporal.HostPort != "" {
 		temporalClient, err := temporal.NewClient(temporal.Config{
-			HostPort:  temporalHostPort,
-			Namespace: temporalNamespace,
-			TaskQueue: temporalTaskQueue,
+			HostPort:  cfg.Temporal.HostPort,
+			Namespace: cfg.Temporal.Namespace,
+			TaskQueue: cfg.Temporal.TaskQueue,
 		}, logger)
 		if err != nil {
 			logger.Error("failed to initialize temporal client, falling back to no-op trigger", slog.String("error", err.Error()))
@@ -161,10 +151,10 @@ func main() {
 		readinessCheck,
 		openapi.SpecJSON(),
 	)
-	router := httptransport.NewRouter(httpHandler, jwtSecret, logger, metrics)
+	router := httptransport.NewRouter(httpHandler, cfg.JWTSecret, logger, metrics)
 
 	httpServer := &http.Server{
-		Addr:              httpAddr,
+		Addr:              cfg.HTTPAddr,
 		Handler:           router,
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       10 * time.Second,
@@ -173,7 +163,7 @@ func main() {
 	}
 
 	metricsServer := &http.Server{
-		Addr:              metricsAddr,
+		Addr:              cfg.MetricsAddr,
 		Handler:           httptransport.NewMetricsRouter(metrics),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       10 * time.Second,
@@ -182,7 +172,7 @@ func main() {
 	}
 
 	grpcServer := grpc.NewServer(
-		grpc.UnaryInterceptor(interceptors.UnaryAuthLoggingInterceptor(jwtSecret, logger, metrics)),
+		grpc.UnaryInterceptor(interceptors.UnaryAuthLoggingInterceptor(cfg.JWTSecret, logger, metrics)),
 	)
 	catalogServer := grpctransport.NewCatalogServer(
 		createCmd,
@@ -196,16 +186,16 @@ func main() {
 	)
 	catalogv1.RegisterCatalogServiceServer(grpcServer, catalogServer)
 
-	grpcLis, err := net.Listen("tcp", grpcAddr)
+	grpcLis, err := net.Listen("tcp", cfg.GRPCAddr)
 	if err != nil {
-		logger.Error("failed to listen on grpc address", slog.String("addr", grpcAddr), slog.String("error", err.Error()))
+		logger.Error("failed to listen on grpc address", slog.String("addr", cfg.GRPCAddr), slog.String("error", err.Error()))
 		os.Exit(1)
 	}
 
 	errCh := make(chan error, 3)
 
 	go func() {
-		logger.Info("starting grpc server", slog.String("addr", grpcAddr))
+		logger.Info("starting grpc server", slog.String("addr", cfg.GRPCAddr))
 		if serveErr := grpcServer.Serve(grpcLis); serveErr != nil {
 			logger.Error("grpc server terminated with error", slog.String("error", serveErr.Error()))
 			errCh <- serveErr
@@ -213,7 +203,7 @@ func main() {
 	}()
 
 	go func() {
-		logger.Info("starting http server", slog.String("addr", httpAddr))
+		logger.Info("starting http server", slog.String("addr", cfg.HTTPAddr))
 		if serveErr := httpServer.ListenAndServe(); serveErr != nil && !errors.Is(serveErr, http.ErrServerClosed) {
 			logger.Error("http server terminated with error", slog.String("error", serveErr.Error()))
 			errCh <- serveErr
@@ -221,7 +211,7 @@ func main() {
 	}()
 
 	go func() {
-		logger.Info("starting internal metrics server", slog.String("addr", metricsAddr))
+		logger.Info("starting internal metrics server", slog.String("addr", cfg.MetricsAddr))
 		if serveErr := metricsServer.ListenAndServe(); serveErr != nil && !errors.Is(serveErr, http.ErrServerClosed) {
 			logger.Error("metrics server terminated with error", slog.String("error", serveErr.Error()))
 			errCh <- serveErr
@@ -251,11 +241,4 @@ func main() {
 	if exitCode != 0 {
 		os.Exit(exitCode)
 	}
-}
-
-func envOrDefault(key, fallback string) string {
-	if v := os.Getenv(key); v != "" {
-		return v
-	}
-	return fallback
 }
