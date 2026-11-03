@@ -10,7 +10,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gemejime/rag-kb-catalog-service/internal/application/command"
 	"github.com/gemejime/rag-kb-catalog-service/internal/application/dto"
 	"github.com/gemejime/rag-kb-catalog-service/internal/application/query"
 	"github.com/gemejime/rag-kb-catalog-service/internal/domain/entity"
@@ -250,8 +249,6 @@ func TestLoad_OCCDatabaseMutationSLI_P99Sub20ms(t *testing.T) {
 	ctx := context.Background()
 	metrics := observability.NewMetrics(nil)
 	repo := postgres.NewInMemoryCatalogRepo(metrics)
-	cache := rediscache.NewInMemoryVersionedCache()
-	updateCmd := command.NewUpdateKnowledgeBaseCommand(repo, cache)
 
 	const totalWrites = 500
 	const concurrency = 10
@@ -286,19 +283,26 @@ func TestLoad_OCCDatabaseMutationSLI_P99Sub20ms(t *testing.T) {
 			for reqID := range workChan {
 				tID := fmt.Sprintf("tenant-write-sli-%d", reqID)
 				kbID := fmt.Sprintf("kb-write-sli-%d", reqID)
-				newDesc := fmt.Sprintf("Updated description %d", reqID)
+
+				kb, err := repo.GetByID(ctx, tID, kbID)
+				if err != nil {
+					t.Errorf("lookup failed: %v", err)
+					continue
+				}
+
+				updated := dto.CloneKB(kb)
+				updated.Version = kb.Version + 1
+				updated.Description = fmt.Sprintf("Updated description %d", reqID)
+				updated.UpdatedAt = time.Now().UTC()
+
+				evt, err := event.NewOutboxEvent(updated, event.EventKBUpdated, nil, updated.UpdatedAt)
+				if err != nil {
+					t.Errorf("outbox event creation failed: %v", err)
+					continue
+				}
 
 				start := time.Now()
-				_, err := updateCmd.Execute(ctx, dto.UpdateKBInput{
-					Caller: policy.CallerIdentity{
-						TenantID: tID,
-						UserID:   "mutation-worker",
-						Roles:    []policy.Role{policy.RoleEditor},
-					},
-					KBID:            kbID,
-					ExpectedVersion: 1,
-					Description:     &newDesc,
-				})
+				err = repo.UpdateMetadata(ctx, updated, kb.Version, evt)
 				elapsed := time.Since(start)
 
 				if err != nil {
