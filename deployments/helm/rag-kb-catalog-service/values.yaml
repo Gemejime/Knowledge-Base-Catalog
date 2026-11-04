@@ -100,9 +100,9 @@ nodeSelector: {}
 tolerations: []
 
 env:
-  ENVIRONMENT: production
-  LOG_LEVEL: info
-  HTTP_PORT: "8080"
+  ENVIRONMENT: "production"
+  LOG_LEVEL: "info"
+  PORT: "8080"
   GRPC_PORT: "50051"
   METRICS_PORT: "9090"
   POSTGRES_HOST: "postgres-cluster.database.svc.cluster.local"
@@ -112,11 +112,12 @@ env:
   POSTGRES_SSLMODE: "verify-full"
   POSTGRES_MAX_CONNS: "50"
   POSTGRES_MIN_CONNS: "10"
+  POSTGRES_MAX_CONN_LIFETIME: "30m"
+  POSTGRES_MAX_CONN_IDLE_TIME: "5m"
   REDIS_CLUSTER_ADDRS: "redis-cluster-node-0.redis:6379,redis-cluster-node-1.redis:6379,redis-cluster-node-2.redis:6379"
   TEMPORAL_HOST_PORT: "temporal-frontend.temporal.svc.cluster.local:7233"
   TEMPORAL_NAMESPACE: "rag-ingestion"
   TEMPORAL_TASK_QUEUE: "rag-ingestion-v1"
-
 secrets:
   postgresPassword: "change-me-postgres-password"
   redisPassword: "change-me-redis-password"

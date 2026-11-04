@@ -1,4 +1,4 @@
-.PHONY: fmt vet lint test test-unit test-integration test-chaos bench bench-load helm-lint build clean
+.PHONY: fmt vet lint test test-unit test-integration test-chaos bench bench-load helm-lint build clean env-sync env-check
 
 SERVICE_NAME := rag-kb-catalog-service
 
@@ -37,3 +37,9 @@ build:
 
 clean:
 	rm -rf bin/ coverage-*.out
+
+env-sync:
+	python scripts/sync_env_to_deployments.py --sync
+
+env-check:
+	python scripts/sync_env_to_deployments.py --check-only
