@@ -34,7 +34,7 @@ if hasattr(sys.stderr, "reconfigure"):
     except Exception:
         pass
 
-SENSITIVE_PATTERNS = ["PASSWORD", "SECRET", "TOKEN", "KEY"]
+SENSITIVE_PATTERNS = ["PASSWORD", "SECRET", "TOKEN", "KEY", "DATABASE_URL"]
 
 
 def find_repo_root() -> Path:

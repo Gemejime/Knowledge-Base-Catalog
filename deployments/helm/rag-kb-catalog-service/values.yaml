@@ -122,10 +122,10 @@ secrets:
   postgresPassword: "change-me-postgres-password"
   redisPassword: "change-me-redis-password"
   jwtHmacSecret: ""
+  databaseUrl: ""
 
 prometheusRule:
   enabled: true
   additionalLabels:
     role: alert-rules
     prometheus: k8s
-

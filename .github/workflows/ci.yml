@@ -345,18 +345,21 @@ jobs:
           JWT_HMAC_SECRET: ${{ secrets.JWT_HMAC_SECRET || 'ci-test-mock-jwt-secret-at-least-32-bytes-long' }}
           POSTGRES_PASSWORD: ${{ secrets.POSTGRES_PASSWORD || 'ci-test-postgres-password' }}
           REDIS_PASSWORD: ${{ secrets.REDIS_PASSWORD || 'ci-test-redis-password' }}
+          DATABASE_URL: ${{ secrets.DATABASE_URL || 'postgres://ci_usr:ci_pwd@ci-db.example.com:5432/ci_db?sslmode=require' }}
         run: |
           echo "Testing Helm chart rendering with injected secrets..."
           helm template test-release deployments/helm/rag-kb-catalog-service \
             --set secrets.jwtHmacSecret="${JWT_HMAC_SECRET}" \
             --set secrets.postgresPassword="${POSTGRES_PASSWORD}" \
             --set secrets.redisPassword="${REDIS_PASSWORD}" \
+            --set secrets.databaseUrl="${DATABASE_URL}" \
             > rendered-manifests.yaml
 
           grep -q "kind: Secret" rendered-manifests.yaml || { echo "::error::Rendered manifests missing Secret resource"; exit 1; }
           grep -q "POSTGRES_PASSWORD:" rendered-manifests.yaml || { echo "::error::Rendered Secret missing POSTGRES_PASSWORD"; exit 1; }
           grep -q "REDIS_PASSWORD:" rendered-manifests.yaml || { echo "::error::Rendered Secret missing REDIS_PASSWORD"; exit 1; }
           grep -q "JWT_HMAC_SECRET:" rendered-manifests.yaml || { echo "::error::Rendered Secret missing JWT_HMAC_SECRET"; exit 1; }
+          grep -q "DATABASE_URL:" rendered-manifests.yaml || { echo "::error::Rendered Secret missing DATABASE_URL"; exit 1; }
           rm -f rendered-manifests.yaml
           echo "Helm secret injection template verification passed cleanly."
 
@@ -392,18 +395,26 @@ jobs:
           JWT_HMAC_SECRET: ${{ secrets.JWT_HMAC_SECRET || 'ci-default-jwt-secret-min-32-chars-mock' }}
           POSTGRES_PASSWORD: ${{ secrets.POSTGRES_PASSWORD || 'ci-default-postgres-password' }}
           REDIS_PASSWORD: ${{ secrets.REDIS_PASSWORD || 'ci-default-redis-password' }}
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
         run: |
           # Enforce GitHub Actions runner log masking for all injected credentials
           echo "::add-mask::$JWT_HMAC_SECRET"
           echo "::add-mask::$POSTGRES_PASSWORD"
           echo "::add-mask::$REDIS_PASSWORD"
+          if [ -n "$DATABASE_URL" ]; then echo "::add-mask::$DATABASE_URL"; fi
 
           echo "Injecting GitHub Secrets into Kubernetes Secret manifest..."
+          EXTRA_ARGS=""
+          if [ -n "$DATABASE_URL" ]; then
+            EXTRA_ARGS="--set secrets.databaseUrl=$DATABASE_URL"
+          fi
+
           helm template rag-kb-catalog-service deployments/helm/rag-kb-catalog-service \
             --namespace rag-system \
             --set secrets.jwtHmacSecret="$JWT_HMAC_SECRET" \
             --set secrets.postgresPassword="$POSTGRES_PASSWORD" \
             --set secrets.redisPassword="$REDIS_PASSWORD" \
+            $EXTRA_ARGS \
             --show-only templates/secret.yaml > /tmp/injected-secret.yaml
 
           # Verify secret contains required opaque type and keys
@@ -421,17 +432,25 @@ jobs:
           JWT_HMAC_SECRET: ${{ secrets.JWT_HMAC_SECRET }}
           POSTGRES_PASSWORD: ${{ secrets.POSTGRES_PASSWORD }}
           REDIS_PASSWORD: ${{ secrets.REDIS_PASSWORD }}
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
         run: |
           if [ -n "$KUBECONFIG_DATA" ] && [ -n "$JWT_HMAC_SECRET" ]; then
             echo "KUBECONFIG and secrets detected; injecting directly to Kubernetes cluster..."
             mkdir -p ~/.kube
             echo "$KUBECONFIG_DATA" | base64 -d > ~/.kube/config
             kubectl create namespace rag-system --dry-run=client -o yaml | kubectl apply -f -
+            
+            EXTRA_LITERALS=""
+            if [ -n "$DATABASE_URL" ]; then
+              EXTRA_LITERALS="--from-literal=DATABASE_URL=$DATABASE_URL"
+            fi
+
             kubectl create secret generic rag-kb-catalog-service-secret \
               --namespace rag-system \
               --from-literal=JWT_HMAC_SECRET="$JWT_HMAC_SECRET" \
               --from-literal=POSTGRES_PASSWORD="$POSTGRES_PASSWORD" \
               --from-literal=REDIS_PASSWORD="$REDIS_PASSWORD" \
+              $EXTRA_LITERALS \
               --dry-run=client -o yaml | kubectl apply -f -
             rm -rf ~/.kube
             echo "Kubernetes Secret successfully injected and synced in namespace rag-system."
