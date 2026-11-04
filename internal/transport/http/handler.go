@@ -71,12 +71,18 @@ func (h *Handler) Healthz(w http.ResponseWriter, _ *http.Request) {
 // Ready handles GET /ready readiness probe verifying PostgreSQL pool and Redis Cluster connectivity.
 func (h *Handler) Ready(w http.ResponseWriter, r *http.Request) {
 	reqID := middleware.RequestIDFromContext(r.Context())
-	if h.readinessCheck != nil {
-		pgOK, redisOK, err := h.readinessCheck(r.Context())
-		if err != nil || !pgOK || !redisOK {
-			WriteError(w, http.StatusServiceUnavailable, "SERVICE_UNAVAILABLE", "upstream dependency unreachable", reqID)
-			return
-		}
+	if h.readinessCheck == nil {
+		WriteJSON(w, http.StatusOK, map[string]string{
+			"status":        "ready",
+			"postgres":      "not_configured",
+			"redis_cluster": "not_configured",
+		})
+		return
+	}
+	pgOK, redisOK, err := h.readinessCheck(r.Context())
+	if err != nil || !pgOK || !redisOK {
+		WriteError(w, http.StatusServiceUnavailable, "SERVICE_UNAVAILABLE", "upstream dependency unreachable", reqID)
+		return
 	}
 	WriteJSON(w, http.StatusOK, map[string]string{
 		"status":        "ready",

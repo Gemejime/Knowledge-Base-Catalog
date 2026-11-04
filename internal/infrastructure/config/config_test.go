@@ -1,6 +1,7 @@
 package config
 
 import (
+	"errors"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -140,21 +141,53 @@ func TestLoad_ValidationAndDefaults(t *testing.T) {
 	_ = os.Unsetenv("DATABASE_URL")
 	_ = os.Unsetenv("POSTGRES_HOST")
 
+	emptyEnv := filepath.Join(t.TempDir(), "empty.env")
+	if err := os.WriteFile(emptyEnv, []byte{}, 0600); err != nil {
+		t.Fatalf("failed to create empty env: %v", err)
+	}
+
 	_, err := Load("non-existent-file-path-triggers-nothing")
 	if err == nil {
-		// When no file is passed or empty, Load checks JWT
+		t.Fatal("expected error loading explicitly named nonexistent file, got nil")
 	}
 	// Call Load without env file
 	t.Setenv("JWT_HMAC_SECRET", "")
-	_, err = Load()
-	if err != ErrMissingJWTSecret {
+	_, err = Load(emptyEnv)
+	if !errors.Is(err, ErrMissingJWTSecret) {
 		t.Fatalf("expected ErrMissingJWTSecret, got %v", err)
 	}
+
+	// Secret shorter than 32 bytes
+	t.Setenv("JWT_HMAC_SECRET", "too-short")
+	_, err = Load(emptyEnv)
+	if !errors.Is(err, ErrJWTSecretTooShort) {
+		t.Fatalf("expected ErrJWTSecretTooShort, got %v", err)
+	}
+
+	// Host-only invalid address
+	t.Setenv("JWT_HMAC_SECRET", "super-secret-jwt-key-minimum-32-chars-long")
+	t.Setenv("HTTP_ADDR", "localhost")
+	_, err = Load(emptyEnv)
+	if err == nil {
+		t.Fatal("expected error for host-only HTTP_ADDR without port, got nil")
+	}
+	_ = os.Unsetenv("HTTP_ADDR")
+
+	// Out-of-range POSTGRES_MAX_CONNS preserves default
+	t.Setenv("POSTGRES_MAX_CONNS", "99999999999999999999")
+	cfgMax, err := Load(emptyEnv)
+	if err != nil {
+		t.Fatalf("unexpected error loading with overflow conn count: %v", err)
+	}
+	if cfgMax.Postgres.MaxConns != 25 {
+		t.Fatalf("expected default MaxConns 25 on overflow, got %d", cfgMax.Postgres.MaxConns)
+	}
+	_ = os.Unsetenv("POSTGRES_MAX_CONNS")
 
 	// 2. Default addresses and levels
 	t.Setenv("JWT_HMAC_SECRET", "super-secret-jwt-key-minimum-32-chars-long")
 	t.Setenv("LOG_LEVEL", "")
-	cfg, err := Load()
+	cfg, err := Load(emptyEnv)
 	if err != nil {
 		t.Fatalf("unexpected error loading config: %v", err)
 	}
@@ -186,7 +219,7 @@ func TestLoad_ValidationAndDefaults(t *testing.T) {
 	t.Setenv("POSTGRES_MAX_CONN_LIFETIME", "15m")
 	t.Setenv("POSTGRES_MAX_CONN_IDLE_TIME", "2m")
 
-	cfgWithPg, err := Load()
+	cfgWithPg, err := Load(emptyEnv)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -214,7 +247,7 @@ func TestLoad_ValidationAndDefaults(t *testing.T) {
 
 	// 4. DATABASE_URL takes precedence over modular variables
 	t.Setenv("DATABASE_URL", "postgres://override_user:override_pass@pgbouncer:6432/override_db?sslmode=verify-full")
-	cfgOverride, err := Load()
+	cfgOverride, err := Load(emptyEnv)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -225,7 +258,7 @@ func TestLoad_ValidationAndDefaults(t *testing.T) {
 	// 5. Redis cluster addresses parsing
 	t.Setenv("REDIS_CLUSTER_ADDRS", "node1:6379, node2:6379,node3:6379 ")
 	t.Setenv("REDIS_PASSWORD", "redis_secret")
-	cfgRedis, err := Load()
+	cfgRedis, err := Load(emptyEnv)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

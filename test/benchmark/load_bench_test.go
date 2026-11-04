@@ -3,7 +3,9 @@ package benchmark_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"os"
 	"runtime"
 	"sort"
 	"sync"
@@ -15,6 +17,7 @@ import (
 	"github.com/gemejime/rag-kb-catalog-service/internal/domain/entity"
 	"github.com/gemejime/rag-kb-catalog-service/internal/domain/event"
 	"github.com/gemejime/rag-kb-catalog-service/internal/domain/policy"
+	"github.com/gemejime/rag-kb-catalog-service/internal/domain/repository"
 	rediscache "github.com/gemejime/rag-kb-catalog-service/internal/infrastructure/cache/redis"
 	"github.com/gemejime/rag-kb-catalog-service/internal/infrastructure/observability"
 	"github.com/gemejime/rag-kb-catalog-service/internal/infrastructure/persistence/postgres"
@@ -133,7 +136,9 @@ func BenchmarkOCCConcurrentMutation(b *testing.B) {
 			updated.UpdatedAt = time.Now().UTC()
 
 			evt, _ := event.NewOutboxEvent(updated, event.EventKBUpdated, nil, updated.UpdatedAt)
-			_ = repo.UpdateMetadata(ctx, updated, kb.Version, evt)
+			if err := repo.UpdateMetadata(ctx, updated, kb.Version, evt); err != nil && !errors.Is(err, entity.ErrVersionConflict) {
+				b.Fatalf("unexpected OCC mutation error: %v", err)
+			}
 		}
 	})
 }
@@ -178,6 +183,7 @@ func TestLoad_DirectCacheReadSLI_P99Sub5ms(t *testing.T) {
 	}
 	close(workChan)
 
+	startLoad := time.Now()
 	var wg sync.WaitGroup
 	wg.Add(concurrency)
 
@@ -213,6 +219,9 @@ func TestLoad_DirectCacheReadSLI_P99Sub5ms(t *testing.T) {
 	}
 
 	wg.Wait()
+	loadDuration := time.Since(startLoad)
+	rps := float64(totalRequests) / loadDuration.Seconds()
+	t.Logf("Direct Cache Read Load: %d requests completed in %v (Throughput: %.2f req/s, target: >=3000 RPS)", totalRequests, loadDuration, rps)
 
 	// Sort latencies to compute quantiles
 	validDurations := durations[:durationIdx]
@@ -243,17 +252,42 @@ func TestLoad_DirectCacheReadSLI_P99Sub5ms(t *testing.T) {
 	}
 }
 
-// TestLoad_OCCDatabaseMutationSLI_P99Sub20ms executes concurrent writes across distinct tenant
+// TestLoad_OCCMutationLatency_P99Sub20ms executes concurrent writes across distinct tenant
 // entities, recording transaction durations and asserting P99 <= 20ms SLI.
-func TestLoad_OCCDatabaseMutationSLI_P99Sub20ms(t *testing.T) {
+// Exercises live PostgreSQL transactions when DATABASE_URL is configured; otherwise
+// measures in-memory OCC persistence latency.
+func TestLoad_OCCMutationLatency_P99Sub20ms(t *testing.T) {
 	ctx := context.Background()
 	metrics := observability.NewMetrics(nil)
-	repo := postgres.NewInMemoryCatalogRepo(metrics)
+
+	var (
+		repo       repository.CatalogRepository
+		isPostgres bool
+	)
+	if dsn := os.Getenv("DATABASE_URL"); dsn != "" {
+		pingCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+		pool, err := postgres.NewPool(pingCtx, postgres.PoolConfig{
+			DSN:      dsn,
+			MaxConns: 25,
+			MinConns: 0,
+		})
+		if err == nil && pool.Ping(pingCtx) == nil {
+			defer pool.Close()
+			repo = postgres.NewCatalogRepo(pool, postgres.NewOutboxRepo(), metrics)
+			isPostgres = true
+		} else if pool != nil {
+			pool.Close()
+		}
+		cancel()
+	}
+	if repo == nil {
+		repo = postgres.NewInMemoryCatalogRepo(metrics)
+	}
 
 	const totalWrites = 500
 	const concurrency = 10
 
-	// Seed 1,000 distinct tenant entities to test concurrent write distribution without false conflicts
+	// Seed tenant entities to test concurrent write distribution without false conflicts
 	for i := 0; i < totalWrites; i++ {
 		tID := fmt.Sprintf("tenant-write-sli-%d", i)
 		kbID := fmt.Sprintf("kb-write-sli-%d", i)
@@ -334,17 +368,26 @@ func TestLoad_OCCDatabaseMutationSLI_P99Sub20ms(t *testing.T) {
 	p90 := validDurations[n*90/100]
 	p99 := validDurations[n*99/100]
 
-	t.Logf("OCC Database Mutation Latencies (N=%d) -> P50: %v, P90: %v, P99: %v", n, p50, p90, p99)
+	targetDesc := "In-Memory OCC Mutation"
+	if isPostgres {
+		targetDesc = "PostgreSQL Database OCC Mutation"
+	}
+	t.Logf("%s Latencies (N=%d) -> P50: %v, P90: %v, P99: %v", targetDesc, n, p50, p90, p99)
 
-	// Assert Database Mutation Latency SLI: P99 <= 20ms
+	// Assert Mutation Latency SLI: P99 <= 20ms
 	if p99 > 20*time.Millisecond {
-		t.Errorf("OCC Database Mutation P99 latency exceeded 20ms SLI: got %v", p99)
+		t.Errorf("OCC Mutation P99 latency exceeded 20ms SLI: got %v", p99)
 	}
 }
 
-// TestLoad_MemoryFootprintRSS_Sub128MB validates that under heavy throughput serialization
-// using the shared sync.Pool buffer pool, memory footprint remains strictly <= 128 MiB (134,217,728 bytes).
-func TestLoad_MemoryFootprintRSS_Sub128MB(t *testing.T) {
+// TestLoad_OCCDatabaseMutationSLI_P99Sub20ms preserves backward-compatibility with CI test runner.
+func TestLoad_OCCDatabaseMutationSLI_P99Sub20ms(t *testing.T) {
+	TestLoad_OCCMutationLatency_P99Sub20ms(t)
+}
+
+// TestLoad_MemoryFootprintHeap_Sub128MB validates that under heavy throughput serialization
+// using the shared sync.Pool buffer pool, Go runtime heap allocations and in-use memory remain strictly <= 128 MiB (134,217,728 bytes).
+func TestLoad_MemoryFootprintHeap_Sub128MB(t *testing.T) {
 	const maxAllowedBytes = 128 * 1024 * 1024 // 128 MiB
 	const totalItems = 50000
 
@@ -371,7 +414,7 @@ func TestLoad_MemoryFootprintRSS_Sub128MB(t *testing.T) {
 	var memAfter runtime.MemStats
 	runtime.ReadMemStats(&memAfter)
 
-	t.Logf("Memory Stats -> Alloc: %d bytes, HeapAlloc: %d bytes, HeapInuse: %d bytes, Sys: %d bytes",
+	t.Logf("Heap Memory Stats -> Alloc: %d bytes, HeapAlloc: %d bytes, HeapInuse: %d bytes, Sys: %d bytes",
 		memAfter.Alloc, memAfter.HeapAlloc, memAfter.HeapInuse, memAfter.Sys)
 
 	if memAfter.Alloc > maxAllowedBytes {
@@ -383,4 +426,9 @@ func TestLoad_MemoryFootprintRSS_Sub128MB(t *testing.T) {
 	if memAfter.Sys > maxAllowedBytes*2 { // Guard total OS virtual allocation
 		t.Fatalf("Total Sys allocation excessive: got %d bytes", memAfter.Sys)
 	}
+}
+
+// TestLoad_MemoryFootprintRSS_Sub128MB preserves backward-compatibility with CI test runner.
+func TestLoad_MemoryFootprintRSS_Sub128MB(t *testing.T) {
+	TestLoad_MemoryFootprintHeap_Sub128MB(t)
 }

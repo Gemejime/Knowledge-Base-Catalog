@@ -201,6 +201,20 @@ func TestHTTPProbesDocAPIAndFullLifecycle(t *testing.T) {
 		}
 	}
 
+	// 1a. Verify standalone mode (nil readiness check) returns not_configured for unconfigured dependencies
+	standaloneHandler := httptransport.NewHandler(nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+	standaloneRec := httptest.NewRecorder()
+	standaloneReq := httptest.NewRequest(http.MethodGet, "/ready", nil)
+	standaloneHandler.Ready(standaloneRec, standaloneReq)
+	if standaloneRec.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK from standalone /ready, got %d", standaloneRec.Code)
+	}
+	var readyBody map[string]string
+	_ = json.Unmarshal(standaloneRec.Body.Bytes(), &readyBody)
+	if readyBody["postgres"] != "not_configured" || readyBody["redis_cluster"] != "not_configured" {
+		t.Fatalf("expected standalone ready probe to report not_configured, got: %+v", readyBody)
+	}
+
 	// 1b. /metrics is removed from the public router (returns 404) and served exclusively via internal metrics router
 	reqMetrics, _ := http.NewRequest(http.MethodGet, h.httpServer.URL+"/metrics", nil)
 	reqMetrics.Header.Set("Authorization", "Bearer "+token)
@@ -219,6 +233,9 @@ func TestHTTPProbesDocAPIAndFullLifecycle(t *testing.T) {
 	httptransport.NewMetricsRouter(h.metrics).ServeHTTP(metricsRecorder, metricsReq)
 	if metricsRecorder.Code != http.StatusOK {
 		t.Fatalf("expected 200 OK from internal NewMetricsRouter, got %d", metricsRecorder.Code)
+	}
+	if !strings.Contains(metricsRecorder.Body.String(), "kb_catalog_requests_total") {
+		t.Fatalf("expected metrics output to contain kb_catalog_requests_total, got: %s", metricsRecorder.Body.String())
 	}
 
 	// 2. Create Knowledge Base with Idempotency-Key
@@ -363,6 +380,30 @@ func TestHTTPProbesDocAPIAndFullLifecycle(t *testing.T) {
 	}
 	if promoted.KnowledgeBase.Version != 3 || promoted.KnowledgeBase.ActiveSchema.Dimensions != 3072 {
 		t.Fatalf("expected version 3 and dimensions 3072 after promotion, got %+v", promoted.KnowledgeBase)
+	}
+
+	// 8. Test min_version enforcement: version meets minimum -> 200 OK
+	getReqOK, _ := http.NewRequest(http.MethodGet, h.httpServer.URL+"/v1/knowledge-bases/"+kbID+"?min_version=3", nil)
+	getReqOK.Header.Set("Authorization", "Bearer "+token)
+	getRespOK, err := http.DefaultClient.Do(getReqOK)
+	if err != nil {
+		t.Fatalf("GET with satisfying min_version failed: %v", err)
+	}
+	_ = getRespOK.Body.Close()
+	if getRespOK.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200 OK when min_version satisfied, got %d", getRespOK.StatusCode)
+	}
+
+	// 9. Test min_version enforcement: version below minimum -> 409 Conflict
+	getReqFail, _ := http.NewRequest(http.MethodGet, h.httpServer.URL+"/v1/knowledge-bases/"+kbID+"?min_version=99", nil)
+	getReqFail.Header.Set("Authorization", "Bearer "+token)
+	getRespFail, err := http.DefaultClient.Do(getReqFail)
+	if err != nil {
+		t.Fatalf("GET with unsatisfiable min_version failed: %v", err)
+	}
+	_ = getRespFail.Body.Close()
+	if getRespFail.StatusCode != http.StatusConflict {
+		t.Fatalf("expected 409 Conflict when min_version not satisfied, got %d", getRespFail.StatusCode)
 	}
 }
 

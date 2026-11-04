@@ -47,6 +47,10 @@ func (q *GetKnowledgeBaseQuery) Execute(ctx context.Context, in dto.GetKBInput) 
 		return nil, err
 	}
 
+	if in.MinVersion > 0 && kb.Version < in.MinVersion {
+		return nil, fmt.Errorf("%w: knowledge base version %d does not meet requested min_version %d", entity.ErrVersionConflict, kb.Version, in.MinVersion)
+	}
+
 	if q.cache != nil {
 		_ = q.cache.PutVersion(ctx, kb)
 	}

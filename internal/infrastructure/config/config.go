@@ -20,6 +20,8 @@ import (
 var (
 	// ErrMissingJWTSecret is returned when JWT_HMAC_SECRET is missing or whitespace only.
 	ErrMissingJWTSecret = errors.New("JWT_HMAC_SECRET environment variable is required and cannot be empty")
+	// ErrJWTSecretTooShort is returned when JWT_HMAC_SECRET is non-blank but shorter than 32 bytes.
+	ErrJWTSecretTooShort = errors.New("JWT_HMAC_SECRET must be at least 32 bytes (256 bits) for cryptographic security")
 )
 
 // PostgresConfig holds PostgreSQL connection and pool parameters.
@@ -220,12 +222,25 @@ func Load(envFiles ...string) (*Config, error) {
 		return nil, err
 	}
 
+	httpAddr, err := normalizeAddr(envOrDefault("HTTP_ADDR", ""), envOrDefault("HTTP_PORT", ""), ":8080")
+	if err != nil {
+		return nil, fmt.Errorf("invalid HTTP address: %w", err)
+	}
+	grpcAddr, err := normalizeAddr(envOrDefault("GRPC_ADDR", ""), envOrDefault("GRPC_PORT", ""), ":50051")
+	if err != nil {
+		return nil, fmt.Errorf("invalid gRPC address: %w", err)
+	}
+	metricsAddr, err := normalizeAddr(envOrDefault("METRICS_ADDR", ""), envOrDefault("METRICS_PORT", ""), ":9090")
+	if err != nil {
+		return nil, fmt.Errorf("invalid metrics address: %w", err)
+	}
+
 	cfg := &Config{
 		Environment: envOrDefault("ENVIRONMENT", "development"),
 		LogLevel:    parseLogLevel(os.Getenv("LOG_LEVEL")),
-		HTTPAddr:    normalizeAddr(envOrDefault("HTTP_ADDR", ""), envOrDefault("HTTP_PORT", ""), ":8080"),
-		GRPCAddr:    normalizeAddr(envOrDefault("GRPC_ADDR", ""), envOrDefault("GRPC_PORT", ""), ":50051"),
-		MetricsAddr: normalizeAddr(envOrDefault("METRICS_ADDR", ""), envOrDefault("METRICS_PORT", ""), ":9090"),
+		HTTPAddr:    httpAddr,
+		GRPCAddr:    grpcAddr,
+		MetricsAddr: metricsAddr,
 		JWTSecret:   os.Getenv("JWT_HMAC_SECRET"),
 		Postgres:    parsePostgresConfig(),
 		Redis:       parseRedisConfig(),
@@ -234,6 +249,9 @@ func Load(envFiles ...string) (*Config, error) {
 
 	if strings.TrimSpace(cfg.JWTSecret) == "" {
 		return nil, ErrMissingJWTSecret
+	}
+	if len(cfg.JWTSecret) < 32 {
+		return nil, ErrJWTSecretTooShort
 	}
 
 	return cfg, nil
@@ -252,22 +270,42 @@ func parseLogLevel(lvl string) slog.Level {
 	}
 }
 
-func normalizeAddr(addrVal, portVal, fallback string) string {
+func normalizeAddr(addrVal, portVal, fallback string) (string, error) {
 	if strings.TrimSpace(addrVal) != "" {
 		trimmed := strings.TrimSpace(addrVal)
-		if !strings.Contains(trimmed, ":") {
-			return ":" + trimmed
+		// Check if it is a pure numeric port e.g. "8080"
+		if p, err := strconv.Atoi(trimmed); err == nil && p > 0 && p <= 65535 {
+			return ":" + trimmed, nil
 		}
-		return trimmed
+		// If it has leading colon e.g. ":8080"
+		if strings.HasPrefix(trimmed, ":") {
+			p, err := strconv.Atoi(trimmed[1:])
+			if err != nil || p <= 0 || p > 65535 {
+				return "", fmt.Errorf("invalid port in address %q", trimmed)
+			}
+			return trimmed, nil
+		}
+		// Must be a valid host:port
+		host, port, err := net.SplitHostPort(trimmed)
+		if err != nil {
+			return "", fmt.Errorf("invalid address %q (expected host:port or numeric port): %w", trimmed, err)
+		}
+		p, err := strconv.Atoi(port)
+		if err != nil || p <= 0 || p > 65535 {
+			return "", fmt.Errorf("invalid port %q in address %q", port, trimmed)
+		}
+		return net.JoinHostPort(host, port), nil
 	}
 	if strings.TrimSpace(portVal) != "" {
 		trimmed := strings.TrimSpace(portVal)
-		if strings.HasPrefix(trimmed, ":") {
-			return trimmed
+		portStr := strings.TrimPrefix(trimmed, ":")
+		p, err := strconv.Atoi(portStr)
+		if err != nil || p <= 0 || p > 65535 {
+			return "", fmt.Errorf("invalid port %q", portVal)
 		}
-		return ":" + trimmed
+		return ":" + portStr, nil
 	}
-	return fallback
+	return fallback, nil
 }
 
 func parsePostgresConfig() PostgresConfig {
@@ -301,8 +339,8 @@ func parsePostgresConfig() PostgresConfig {
 		}
 	}
 
-	maxConns := int32(parseEnvInt("POSTGRES_MAX_CONNS", 25))
-	minConns := int32(parseEnvInt("POSTGRES_MIN_CONNS", 5))
+	maxConns := parseEnvInt32("POSTGRES_MAX_CONNS", 25)
+	minConns := parseEnvInt32("POSTGRES_MIN_CONNS", 5)
 	maxLifetime := parseEnvDuration("POSTGRES_MAX_CONN_LIFETIME", 30*time.Minute)
 	maxIdleTime := parseEnvDuration("POSTGRES_MAX_CONN_IDLE_TIME", 5*time.Minute)
 
@@ -313,6 +351,18 @@ func parsePostgresConfig() PostgresConfig {
 		MaxConnLifetime: maxLifetime,
 		MaxConnIdleTime: maxIdleTime,
 	}
+}
+
+func parseEnvInt32(key string, fallback int32) int32 {
+	v := strings.TrimSpace(os.Getenv(key))
+	if v == "" {
+		return fallback
+	}
+	n, err := strconv.ParseInt(v, 10, 32)
+	if err != nil || n <= 0 {
+		return fallback
+	}
+	return int32(n)
 }
 
 func parseRedisConfig() RedisConfig {
