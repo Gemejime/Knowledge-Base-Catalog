@@ -9,6 +9,7 @@ on:
     branches:
       - main
       - rag-kb-catalog-service
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -339,11 +340,104 @@ jobs:
             '
           fi
 
+      - name: Validate Helm Template with Injected Secrets
+        env:
+          JWT_HMAC_SECRET: ${{ secrets.JWT_HMAC_SECRET || 'ci-test-mock-jwt-secret-at-least-32-bytes-long' }}
+          POSTGRES_PASSWORD: ${{ secrets.POSTGRES_PASSWORD || 'ci-test-postgres-password' }}
+          REDIS_PASSWORD: ${{ secrets.REDIS_PASSWORD || 'ci-test-redis-password' }}
+        run: |
+          echo "Testing Helm chart rendering with injected secrets..."
+          helm template test-release deployments/helm/rag-kb-catalog-service \
+            --set secrets.jwtHmacSecret="${JWT_HMAC_SECRET}" \
+            --set secrets.postgresPassword="${POSTGRES_PASSWORD}" \
+            --set secrets.redisPassword="${REDIS_PASSWORD}" \
+            > rendered-manifests.yaml
+
+          grep -q "kind: Secret" rendered-manifests.yaml || { echo "::error::Rendered manifests missing Secret resource"; exit 1; }
+          grep -q "POSTGRES_PASSWORD:" rendered-manifests.yaml || { echo "::error::Rendered Secret missing POSTGRES_PASSWORD"; exit 1; }
+          grep -q "REDIS_PASSWORD:" rendered-manifests.yaml || { echo "::error::Rendered Secret missing REDIS_PASSWORD"; exit 1; }
+          grep -q "JWT_HMAC_SECRET:" rendered-manifests.yaml || { echo "::error::Rendered Secret missing JWT_HMAC_SECRET"; exit 1; }
+          rm -f rendered-manifests.yaml
+          echo "Helm secret injection template verification passed cleanly."
+
       - name: Verify Distroless Docker Build
         run: |
           if [ -f "deployments/docker/Dockerfile" ]; then
             echo "Building Docker container image..."
             docker build -f deployments/docker/Dockerfile -t rag-kb-catalog-service:ci .
           fi
+
+  # ---------------------------------------------------------------------------
+  # 6. CI/CD Secret Injection & Cluster Deployment Verification
+  # ---------------------------------------------------------------------------
+  cd-secret-injection-and-deployment:
+    name: CI/CD Secret Injection & Cluster Deployment Verification
+    needs: [lint-and-typecheck, security-and-logging-audit, openapi-and-doc-api-sync, test-suites, packaging-and-helm-validation]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/rag-kb-catalog-service' || github.event_name == 'workflow_dispatch'
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Install Helm & Kubectl
+        uses: azure/setup-helm@v4
+        with:
+          version: "v3.16.2"
+
+      - name: Execute Secret Masking and Injection Validation
+        env:
+          JWT_HMAC_SECRET: ${{ secrets.JWT_HMAC_SECRET || 'ci-default-jwt-secret-min-32-chars-mock' }}
+          POSTGRES_PASSWORD: ${{ secrets.POSTGRES_PASSWORD || 'ci-default-postgres-password' }}
+          REDIS_PASSWORD: ${{ secrets.REDIS_PASSWORD || 'ci-default-redis-password' }}
+        run: |
+          # Enforce GitHub Actions runner log masking for all injected credentials
+          echo "::add-mask::$JWT_HMAC_SECRET"
+          echo "::add-mask::$POSTGRES_PASSWORD"
+          echo "::add-mask::$REDIS_PASSWORD"
+
+          echo "Injecting GitHub Secrets into Kubernetes Secret manifest..."
+          helm template rag-kb-catalog-service deployments/helm/rag-kb-catalog-service \
+            --namespace rag-system \
+            --set secrets.jwtHmacSecret="$JWT_HMAC_SECRET" \
+            --set secrets.postgresPassword="$POSTGRES_PASSWORD" \
+            --set secrets.redisPassword="$REDIS_PASSWORD" \
+            --show-only templates/secret.yaml > /tmp/injected-secret.yaml
+
+          # Verify secret contains required opaque type and keys
+          grep -q "type: Opaque" /tmp/injected-secret.yaml || { echo "::error::Injected secret is not type: Opaque"; exit 1; }
+          grep -q "POSTGRES_PASSWORD:" /tmp/injected-secret.yaml || { echo "::error::Injected secret missing POSTGRES_PASSWORD"; exit 1; }
+          grep -q "REDIS_PASSWORD:" /tmp/injected-secret.yaml || { echo "::error::Injected secret missing REDIS_PASSWORD"; exit 1; }
+          grep -q "JWT_HMAC_SECRET:" /tmp/injected-secret.yaml || { echo "::error::Injected secret missing JWT_HMAC_SECRET"; exit 1; }
+
+          rm -f /tmp/injected-secret.yaml
+          echo "Secret injection validation succeeded."
+
+      - name: Deploy Injected Secret to Kubernetes Cluster (When KUBECONFIG is configured)
+        env:
+          KUBECONFIG_DATA: ${{ secrets.KUBECONFIG }}
+          JWT_HMAC_SECRET: ${{ secrets.JWT_HMAC_SECRET }}
+          POSTGRES_PASSWORD: ${{ secrets.POSTGRES_PASSWORD }}
+          REDIS_PASSWORD: ${{ secrets.REDIS_PASSWORD }}
+        run: |
+          if [ -n "$KUBECONFIG_DATA" ] && [ -n "$JWT_HMAC_SECRET" ]; then
+            echo "KUBECONFIG and secrets detected; injecting directly to Kubernetes cluster..."
+            mkdir -p ~/.kube
+            echo "$KUBECONFIG_DATA" | base64 -d > ~/.kube/config
+            kubectl create namespace rag-system --dry-run=client -o yaml | kubectl apply -f -
+            kubectl create secret generic rag-kb-catalog-service-secret \
+              --namespace rag-system \
+              --from-literal=JWT_HMAC_SECRET="$JWT_HMAC_SECRET" \
+              --from-literal=POSTGRES_PASSWORD="$POSTGRES_PASSWORD" \
+              --from-literal=REDIS_PASSWORD="$REDIS_PASSWORD" \
+              --dry-run=client -o yaml | kubectl apply -f -
+            rm -rf ~/.kube
+            echo "Kubernetes Secret successfully injected and synced in namespace rag-system."
+          else
+            echo "No live KUBECONFIG secret provided in CI environment; skipped direct cluster push (ArgoCD / GitOps mode)."
+          fi
+
 
 
