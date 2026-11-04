@@ -120,7 +120,7 @@ env:
 secrets:
   postgresPassword: "change-me-postgres-password"
   redisPassword: "change-me-redis-password"
-  jwtHmacSecret: "change-me-at-least-32-bytes-long-jwt-hmac-secret-key"
+  jwtHmacSecret: ""
 
 prometheusRule:
   enabled: true

@@ -19,10 +19,6 @@ spec:
       port: {{ .Values.service.ports.grpc }}
       targetPort: grpc
       protocol: TCP
-    - name: metrics
-      port: {{ .Values.service.ports.metrics }}
-      targetPort: metrics
-      protocol: TCP
   selector:
     {{- include "rag-kb-catalog-service.selectorLabels" . | nindent 4 }}
 

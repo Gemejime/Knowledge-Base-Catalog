@@ -113,6 +113,12 @@
     - Designed zero-dependency `internal/infrastructure/config` package with automatic POSIX `.env` parsing, upward repository root traversal, and type-safe configuration loading (`Config`, `PostgresConfig`, `RedisConfig`, `TemporalConfig`).
     - Enforced that modifications to `.env` dynamically mutate the process environment (`os.Setenv`) and configure all server listeners, log levels, database pools, caches, and workflow triggers without manual shell exports.
     - Documented comprehensive `.env.example` defining all operational parameters across networking, logging, JWT authentication, PostgreSQL with PgBouncer tuning, Redis 7.2 Cluster, and Temporal backfill workers.
+  - **Comprehensive Code Review Hardening & CI Toolchain Alignment**:
+    - **Configuration & Secret Hardening**: Validated `JWT_HMAC_SECRET` enforces $\ge 32$ bytes minimum entropy via `ErrJWTSecretTooShort`. Hardened address normalization (`HTTP_ADDR`, `GRPC_ADDR`, `METRICS_ADDR`) to reject host-only or malformed addresses. Added 32-bit range overflow bounds checks on `POSTGRES_MAX_CONNS` and `POSTGRES_MIN_CONNS`.
+    - **OpenAPI 3.1 & Doc API Contracts**: Updated `RetrievalProfile` schema to enforce `minimum: 0` and `maximum: 1` on `dense_weight`, `sparse_weight`, and `cross_encoder_confidence_threshold`, documenting constraint that weights cannot both be 0. Documented `not_configured` readiness status and HTTP 409 causal freshness conflict responses.
+    - **CDC & Debezium Configuration**: Updated PostgreSQL connector configuration to use `${envVarProvider:POSTGRES_*}` and created `deployments/debezium/connect-distributed.properties` registering `EnvVarConfigProvider`.
+    - **Observability & Prometheus Alerts**: Registered `pgx_pool_acquired_conns` and `pgx_pool_max_conns` Prometheus gauges backed by `pgxpool.Pool.Stat()`. Aligned Prometheus alert rule method selectors for `HighMutationConflictRate` and `P99ReadLatencyDegradation` to match exact HTTP and gRPC labels. Restricted metrics port in external Kubernetes Service.
+    - **Causal Read Freshness & Benchmark Verification**: Enforced `min_version` check on database fallback in `GetKnowledgeBaseQuery` returning `ErrVersionConflict`. Verified OCC mutation throughput in benchmarks without error discarding. Confirmed Go 1.26 toolchain alignment in Dockerfile and CI workflow.
 
 
 

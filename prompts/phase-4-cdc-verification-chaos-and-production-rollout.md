@@ -124,18 +124,19 @@ Create `deployments/debezium/register-postgres-outbox-connector.json`:
 - **Synthetic Quantile Load Tests**:
   - `TestLoad_DirectCacheReadSLI_P99Sub5ms`:
     - Generate 3,000 requests across concurrent worker goroutines against versioned cache entries (`kb:{tenant_id}:{id}:v{version}`).
+    - Measure the elapsed load window and require completed requests per second to meet the 3,000 RPS target.
     - Record high-resolution durations, sort latency distribution, and assert $P50 \le 1\text{ms}$, $P90 \le 3\text{ms}$, and $P99 \le 5\text{ms}$.
-  - `TestLoad_OCCDatabaseMutationSLI_P99Sub20ms`:
-    - Execute concurrent writes across distinct tenant entities, recording transaction durations.
+  - `TestLoad_OCCMutationLatency_P99Sub20ms`:
+    - Execute concurrent writes across distinct tenant entities, recording transaction durations. Exercises live PostgreSQL transactions when configured or in-memory OCC persistence in standalone mode.
     - Assert write latency $P99 \le 20\text{ms}$.
-  - `TestLoad_MemoryFootprintRSS_Sub128MB`:
-    - Read memory stats via `runtime.ReadMemStats` before and after high-throughput batch serialization.
-    - Assert that resident memory and heap in-use remain strictly below the $128\text{MiB}$ threshold (`134,217,728` bytes).
+  - `TestLoad_MemoryFootprintHeap_Sub128MB`:
+    - Read memory stats via `runtime.ReadMemStats` before and after high-throughput batch serialization to measure heap-only memory.
+    - Assert that heap in-use and allocation remain strictly below the $128\text{MiB}$ threshold (`134,217,728` bytes).
 
 ### E. Production Packaging, Helm Chart & Declarative ArgoCD GitOps Manifest (`deployments/`)
 
 - **Multi-Stage Distroless Dockerfile (`deployments/docker/Dockerfile`)**:
-  - Builder stage: `golang:1.23-alpine` (or `golang:1.23-bookworm`), statically compiled with `CGO_ENABLED=0`, `-trimpath`, `-ldflags="-s -w"`.
+  - Builder stage: `golang:1.26-alpine` (or `golang:1.26-bookworm`), statically compiled with `CGO_ENABLED=0`, `-trimpath`, `-ldflags="-s -w"`.
   - Final stage: `gcr.io/distroless/static:nonroot` running as non-root UID `65532:65532`.
   - Expose ports: `8080` (HTTP REST), `50051` (gRPC), `9090` (Metrics).
 - **High-Availability Kubernetes Helm Chart (`deployments/helm/rag-kb-catalog-service/`)**:

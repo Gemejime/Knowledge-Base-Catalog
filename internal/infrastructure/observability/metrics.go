@@ -81,3 +81,36 @@ func (m *Metrics) RecordOptimisticConflict(tenantID, operation string) {
 	}
 	m.OptimisticConflictsTotal.WithLabelValues(tenantID, operation).Inc()
 }
+
+// RegisterPgxPoolStats registers Prometheus Gauge functions for PostgreSQL connection pool saturation monitoring.
+func (m *Metrics) RegisterPgxPoolStats(acquiredConnsFn, maxConnsFn func() int32) {
+	if m == nil || m.Registry == nil {
+		return
+	}
+	m.Registry.MustRegister(
+		prometheus.NewGaugeFunc(
+			prometheus.GaugeOpts{
+				Name: "pgx_pool_acquired_conns",
+				Help: "Total number of currently acquired connections from the PostgreSQL connection pool.",
+			},
+			func() float64 {
+				if acquiredConnsFn == nil {
+					return 0
+				}
+				return float64(acquiredConnsFn())
+			},
+		),
+		prometheus.NewGaugeFunc(
+			prometheus.GaugeOpts{
+				Name: "pgx_pool_max_conns",
+				Help: "Configured maximum connections allowed in the PostgreSQL connection pool.",
+			},
+			func() float64 {
+				if maxConnsFn == nil {
+					return 0
+				}
+				return float64(maxConnsFn())
+			},
+		),
+	)
+}

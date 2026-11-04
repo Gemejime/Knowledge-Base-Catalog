@@ -1,8 +1,8 @@
-# Multi-Stage Distroless Dockerfile for rag-kb-catalog-service (Go 1.23+)
+# Multi-Stage Distroless Dockerfile for rag-kb-catalog-service (Go 1.26+)
 # Hardened against CVEs and enforces non-root execution (UID 65532).
 
 # Stage 1: Build static Go binary
-FROM golang:1.23-alpine AS builder
+FROM golang:1.26-alpine AS builder
 
 WORKDIR /src
 

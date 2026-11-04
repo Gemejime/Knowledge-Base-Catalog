@@ -36,7 +36,7 @@ paths:
       security: []
       responses:
         "200":
-          description: PostgreSQL pool and Redis Cluster are reachable
+          description: PostgreSQL pool and Redis Cluster are reachable, or reported as not_configured in standalone mode
           content:
             application/json:
               schema:
@@ -47,9 +47,15 @@ paths:
                     example: ready
                   postgres:
                     type: string
+                    enum:
+                      - connected
+                      - not_configured
                     example: connected
                   redis_cluster:
                     type: string
+                    enum:
+                      - connected
+                      - not_configured
                     example: connected
                 required:
                   - status
@@ -174,6 +180,12 @@ paths:
           $ref: "#/components/responses/Forbidden"
         "404":
           description: Knowledge Base not found within tenant scope
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "409":
+          description: Minimum version requirement not satisfied or OCC version conflict
           content:
             application/json:
               schema:
@@ -435,6 +447,7 @@ components:
         - schema_version
     RetrievalProfile:
       type: object
+      description: Hybrid search scoring and reranking configuration. dense_weight and sparse_weight cannot both be 0.
       properties:
         default_top_k:
           type: integer
@@ -444,10 +457,14 @@ components:
         dense_weight:
           type: number
           format: float
+          minimum: 0
+          maximum: 1
           example: 0.7
         sparse_weight:
           type: number
           format: float
+          minimum: 0
+          maximum: 1
           example: 0.3
         reranker_candidate_pool_size:
           type: integer
@@ -456,6 +473,8 @@ components:
         cross_encoder_confidence_threshold:
           type: number
           format: float
+          minimum: 0
+          maximum: 1
           example: 0.65
       required:
         - default_top_k

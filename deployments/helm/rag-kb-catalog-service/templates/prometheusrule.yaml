@@ -13,7 +13,7 @@ spec:
     - name: rag-kb-catalog-service.rules
       rules:
         - alert: HighMutationConflictRate
-          expr: sum(rate(kb_catalog_optimistic_conflicts_total[5m])) / sum(rate(kb_catalog_requests_total{method=~"Update.*|Trigger.*|Promote.*|Abort.*|Delete.*"}[5m])) > 0.05
+          expr: sum(rate(kb_catalog_optimistic_conflicts_total[5m])) / sum(rate(kb_catalog_requests_total{method=~"(PATCH|POST|DELETE) /v1/knowledge-bases.*|.*/(Create|Update|Trigger|Promote|Abort|Delete).*"}[5m])) > 0.05
           for: 5m
           labels:
             severity: warning
@@ -23,7 +23,7 @@ spec:
             description: "Tenant mutation conflict rate exceeds 5% of mutation traffic over the last 5 minutes. Check for concurrent uncoordinated writes."
 
         - alert: P99ReadLatencyDegradation
-          expr: histogram_quantile(0.99, sum(rate(kb_catalog_request_duration_seconds_bucket{method="GetKnowledgeBase"}[3m])) by (le)) > 0.010
+          expr: histogram_quantile(0.99, sum(rate(kb_catalog_request_duration_seconds_bucket{method=~"GET /v1/knowledge-bases/\\{kb_id\\}|.*/GetKnowledgeBase"}[3m])) by (le)) > 0.010
           for: 3m
           labels:
             severity: warning

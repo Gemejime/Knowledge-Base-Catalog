@@ -14,7 +14,7 @@ permissions:
   contents: read
 
 env:
-  GO_VERSION: "1.23"
+  GO_VERSION: "1.26"
   SERVICE_NAME: "rag-kb-catalog-service"
 
 jobs:
@@ -63,6 +63,7 @@ jobs:
         uses: golangci/golangci-lint-action@v6
         with:
           version: latest
+          install-mode: goinstall
           args: --timeout=5m
 
       - name: Verify Hexagonal Domain Isolation (Zero Third-Party I/O in internal/domain)

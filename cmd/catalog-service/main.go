@@ -67,6 +67,10 @@ func main() {
 		}
 		dbPool = pool
 		defer dbPool.Close()
+		metrics.RegisterPgxPoolStats(
+			func() int32 { return dbPool.Stat().AcquiredConns() },
+			func() int32 { return dbPool.Stat().MaxConns() },
+		)
 		repo = postgres.NewCatalogRepo(dbPool, postgres.NewOutboxRepo(), metrics)
 	} else {
 		logger.Info("initializing in-memory catalog repository for standalone mode")
@@ -125,18 +129,21 @@ func main() {
 	getQuery := query.NewGetKnowledgeBaseQuery(repo, cache)
 	listQuery := query.NewListKnowledgeBasesQuery(repo)
 
-	readinessCheck := func(checkCtx context.Context) (bool, bool, error) {
-		if dbPool != nil {
-			if err := dbPool.Ping(checkCtx); err != nil {
-				return false, false, err
+	var readinessCheck httptransport.ReadinessCheckFunc
+	if dbPool != nil || len(cfg.Redis.Addrs) > 0 {
+		readinessCheck = func(checkCtx context.Context) (bool, bool, error) {
+			if dbPool != nil {
+				if err := dbPool.Ping(checkCtx); err != nil {
+					return false, false, err
+				}
 			}
-		}
-		if redisPinger != nil {
-			if err := redisPinger.Ping(checkCtx); err != nil {
-				return true, false, err
+			if len(cfg.Redis.Addrs) > 0 && redisPinger != nil {
+				if err := redisPinger.Ping(checkCtx); err != nil {
+					return true, false, err
+				}
 			}
+			return true, true, nil
 		}
-		return true, true, nil
 	}
 
 	httpHandler := httptransport.NewHandler(

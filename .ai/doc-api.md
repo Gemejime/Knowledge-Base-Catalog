@@ -77,15 +77,15 @@ The `rag-kb-catalog-service` runs an HTTP server (default port `8080`) serving O
         "security": [],
         "responses": {
           "200": {
-            "description": "PostgreSQL pool and Redis Cluster are reachable",
+            "description": "PostgreSQL pool and Redis Cluster are reachable, or reported as not_configured in standalone mode",
             "content": {
               "application/json": {
                 "schema": {
                   "type": "object",
                   "properties": {
                     "status": { "type": "string", "example": "ready" },
-                    "postgres": { "type": "string", "example": "connected" },
-                    "redis_cluster": { "type": "string", "example": "connected" }
+                    "postgres": { "type": "string", "enum": ["connected", "not_configured"], "example": "connected" },
+                    "redis_cluster": { "type": "string", "enum": ["connected", "not_configured"], "example": "connected" }
                   },
                   "required": ["status", "postgres", "redis_cluster"]
                 }
@@ -222,6 +222,14 @@ The `rag-kb-catalog-service` runs an HTTP server (default port `8080`) serving O
           },
           "404": {
             "description": "Knowledge Base not found within tenant scope",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ErrorResponse" }
+              }
+            }
+          },
+          "409": {
+            "description": "Minimum version requirement not satisfied or OCC version conflict",
             "content": {
               "application/json": {
                 "schema": { "$ref": "#/components/schemas/ErrorResponse" }
@@ -504,12 +512,13 @@ The `rag-kb-catalog-service` runs an HTTP server (default port `8080`) serving O
       },
       "RetrievalProfile": {
         "type": "object",
+        "description": "Hybrid search scoring and reranking configuration. dense_weight and sparse_weight cannot both be 0.",
         "properties": {
           "default_top_k": { "type": "integer", "minimum": 1, "maximum": 200 },
-          "dense_weight": { "type": "number", "format": "float" },
-          "sparse_weight": { "type": "number", "format": "float" },
+          "dense_weight": { "type": "number", "format": "float", "minimum": 0, "maximum": 1 },
+          "sparse_weight": { "type": "number", "format": "float", "minimum": 0, "maximum": 1 },
           "reranker_candidate_pool_size": { "type": "integer", "minimum": 1 },
-          "cross_encoder_confidence_threshold": { "type": "number", "format": "float" }
+          "cross_encoder_confidence_threshold": { "type": "number", "format": "float", "minimum": 0, "maximum": 1 }
         },
         "required": [
           "default_top_k",
@@ -1005,13 +1014,15 @@ CREATE TABLE IF NOT EXISTS idempotency_keys (
 | `kb_catalog_optimistic_conflicts_total` | Counter | `tenant`, `operation` | OCC version mismatch events (HTTP 409 / gRPC Aborted) |
 | `kb_catalog_migration_delta_lag_records` | Gauge | `tenant`, `kb_id` | Outstanding delta write backlog before Blue-Green cutover (aliased as `kb_migration_delta_lag_records` in Runbook 1) |
 | `kb_catalog_active_migrations` | Gauge | `tenant` | Currently active Blue-Green migrations in `REINDEXING` state |
+| `pgx_pool_acquired_conns` | Gauge | none | Total number of currently acquired connections from the PostgreSQL pgxpool |
+| `pgx_pool_max_conns` | Gauge | none | Configured maximum connections allowed in the PostgreSQL pgxpool |
 
 ### Production Alert Rules Matrix
 
 | Alert Name | Severity | Duration | PromQL Expression | Threshold / Condition |
 | :--- | :--- | :--- | :--- | :--- |
-| **HighMutationConflictRate** | `warning` | `5m` | `sum(rate(kb_catalog_optimistic_conflicts_total[5m])) / sum(rate(kb_catalog_requests_total{method=~"Update.*\|Trigger.*\|Promote.*\|Abort.*\|Delete.*"}[5m])) > 0.05` | OCC conflict rate > 5% of mutation traffic over 5m |
-| **P99ReadLatencyDegradation** | `warning` | `3m` | `histogram_quantile(0.99, sum(rate(kb_catalog_request_duration_seconds_bucket{method="GetKnowledgeBase"}[3m])) by (le)) > 0.010` | P99 direct read latency > 10ms for 3m (SLO: <= 5ms) |
+| **HighMutationConflictRate** | `warning` | `5m` | `sum(rate(kb_catalog_optimistic_conflicts_total[5m])) / sum(rate(kb_catalog_requests_total{method=~"(PATCH|POST|DELETE) /v1/knowledge-bases.*|.*/(Create|Update|Trigger|Promote|Abort|Delete).*"}[5m])) > 0.05` | OCC conflict rate > 5% of mutation traffic over 5m |
+| **P99ReadLatencyDegradation** | `warning` | `3m` | `histogram_quantile(0.99, sum(rate(kb_catalog_request_duration_seconds_bucket{method=~"GET /v1/knowledge-bases/\\{kb_id\\}|.*/GetKnowledgeBase"}[3m])) by (le)) > 0.010` | P99 direct read latency > 10ms for 3m (SLO: <= 5ms) |
 | **ReindexConvergenceStall** | `critical` | `15m` | `kb_catalog_migration_delta_lag_records > 0 and (deriv(kb_catalog_migration_delta_lag_records[15m]) >= 0)` | Migration delta buffer lag > 0 without decrease for 15m |
 | **DatabasePoolSaturation** | `critical` | `2m` | `(pgx_pool_acquired_conns / pgx_pool_max_conns) > 0.85` | PostgreSQL pgx connection pool utilization > 85% for 2m |
 
@@ -1023,6 +1034,11 @@ CREATE TABLE IF NOT EXISTS idempotency_keys (
 - **Connector Name**: `rag-kb-catalog-outbox-connector`
 - **Connector Class**: `io.debezium.connector.postgresql.PostgresConnector`
 - **Plugin Name**: `pgoutput`
+- **Database Configuration & Config Provider**: Uses `${envVarProvider:POSTGRES_*}` variable placeholders resolved by `org.apache.kafka.common.config.provider.EnvVarConfigProvider` enabled in Kafka Connect worker configuration (`deployments/debezium/connect-distributed.properties`):
+  ```properties
+  config.providers=envVarProvider
+  config.providers.envVarProvider.class=org.apache.kafka.common.config.provider.EnvVarConfigProvider
+  ```
 - **Replication Slot**: `rag_kb_debezium_slot` (`slot.drop.on.stop: false`)
 - **Publication**: `rag_kb_outbox_publication` (`publication.autocreate.mode: filtered`)
 - **Tailed Table**: `public.outbox_events`
