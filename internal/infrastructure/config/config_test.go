@@ -207,6 +207,17 @@ func TestLoad_ValidationAndDefaults(t *testing.T) {
 		t.Errorf("expected default Environment development, got %s", cfg.Environment)
 	}
 
+	// Fallback to PORT if HTTP_ADDR and HTTP_PORT are empty
+	t.Setenv("PORT", "8888")
+	cfgPort, err := Load(emptyEnv)
+	if err != nil {
+		t.Fatalf("unexpected error loading config with PORT: %v", err)
+	}
+	if cfgPort.HTTPAddr != ":8888" {
+		t.Errorf("expected HTTPAddr :8888 from PORT, got %s", cfgPort.HTTPAddr)
+	}
+	_ = os.Unsetenv("PORT")
+
 	// 3. Postgres DSN assembly from parts
 	t.Setenv("POSTGRES_HOST", "db.example.com")
 	t.Setenv("POSTGRES_PORT", "5433")

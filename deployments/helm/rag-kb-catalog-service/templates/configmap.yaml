@@ -5,20 +5,11 @@ metadata:
   labels:
     {{- include "rag-kb-catalog-service.labels" . | nindent 4 }}
 data:
-  ENVIRONMENT: {{ .Values.env.ENVIRONMENT | quote }}
-  LOG_LEVEL: {{ .Values.env.LOG_LEVEL | quote }}
-  HTTP_PORT: {{ .Values.env.HTTP_PORT | quote }}
-  GRPC_PORT: {{ .Values.env.GRPC_PORT | quote }}
-  METRICS_PORT: {{ .Values.env.METRICS_PORT | quote }}
-  POSTGRES_HOST: {{ .Values.env.POSTGRES_HOST | quote }}
-  POSTGRES_PORT: {{ .Values.env.POSTGRES_PORT | quote }}
-  POSTGRES_DB: {{ .Values.env.POSTGRES_DB | quote }}
-  POSTGRES_USER: {{ .Values.env.POSTGRES_USER | quote }}
-  POSTGRES_SSLMODE: {{ .Values.env.POSTGRES_SSLMODE | quote }}
-  POSTGRES_MAX_CONNS: {{ .Values.env.POSTGRES_MAX_CONNS | quote }}
-  POSTGRES_MIN_CONNS: {{ .Values.env.POSTGRES_MIN_CONNS | quote }}
-  REDIS_CLUSTER_ADDRS: {{ .Values.env.REDIS_CLUSTER_ADDRS | quote }}
-  TEMPORAL_HOST_PORT: {{ .Values.env.TEMPORAL_HOST_PORT | quote }}
-  TEMPORAL_NAMESPACE: {{ .Values.env.TEMPORAL_NAMESPACE | quote }}
-  TEMPORAL_TASK_QUEUE: {{ .Values.env.TEMPORAL_TASK_QUEUE | quote }}
+  PORT: {{ default "8080" (get .Values.env "PORT") | quote }}
+  GRPC_PORT: {{ default "50051" (get .Values.env "GRPC_PORT") | quote }}
+  {{- range $key, $val := .Values.env }}
+  {{- if and (ne $key "secretName") (ne $key "PORT") (ne $key "GRPC_PORT") (ne $val nil) }}
+  {{ $key }}: {{ $val | quote }}
+  {{- end }}
+  {{- end }}
 

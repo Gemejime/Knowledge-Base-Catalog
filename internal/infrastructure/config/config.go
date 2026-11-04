@@ -222,7 +222,7 @@ func Load(envFiles ...string) (*Config, error) {
 		return nil, err
 	}
 
-	httpAddr, err := normalizeAddr(envOrDefault("HTTP_ADDR", ""), envOrDefault("HTTP_PORT", ""), ":8080")
+	httpAddr, err := normalizeAddr(envOrDefault("HTTP_ADDR", ""), envOrDefault("HTTP_PORT", envOrDefault("PORT", "")), ":8080")
 	if err != nil {
 		return nil, fmt.Errorf("invalid HTTP address: %w", err)
 	}
