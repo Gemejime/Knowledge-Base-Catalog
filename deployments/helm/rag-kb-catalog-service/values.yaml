@@ -114,7 +114,7 @@ env:
   POSTGRES_MIN_CONNS: "10"
   POSTGRES_MAX_CONN_LIFETIME: "30m"
   POSTGRES_MAX_CONN_IDLE_TIME: "5m"
-  REDIS_CLUSTER_ADDRS: "redis-cluster-node-0.redis:6379,redis-cluster-node-1.redis:6379,redis-cluster-node-2.redis:6379"
+  REDIS_CLUSTER_ADDRS: "redis-cluster-0.redis-cluster-headless.rag-system.svc.cluster.local:6379,redis-cluster-1.redis-cluster-headless.rag-system.svc.cluster.local:6379,redis-cluster-2.redis-cluster-headless.rag-system.svc.cluster.local:6379"
   TEMPORAL_HOST_PORT: "temporal-frontend.temporal.svc.cluster.local:7233"
   TEMPORAL_NAMESPACE: "rag-ingestion"
   TEMPORAL_TASK_QUEUE: "rag-ingestion-v1"
