@@ -1,0 +1,703 @@
+openapi: 3.1.0
+info:
+  title: RAG Knowledge Base Catalog Service API
+  description: >-
+    Control-plane metadata authority for Knowledge Base lifecycles, strict vector
+    schema immutability, Blue-Green schema migrations, hierarchical taxonomy
+    discovery, and transactional CDC outbox governance. Tenant scope (tenant_id)
+    is derived strictly from verified caller JWT claims propagated by the Edge
+    API Gateway, never trusted from unverified payload fields.
+  version: 1.0.0
+security:
+  - bearerAuth: []
+paths:
+  /healthz:
+    get:
+      summary: Liveness Probe
+      operationId: getLiveness
+      security: []
+      responses:
+        "200":
+          description: Service process is alive
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: healthy
+                required:
+                  - status
+  /ready:
+    get:
+      summary: Readiness Probe
+      operationId: getReadiness
+      security: []
+      responses:
+        "200":
+          description: PostgreSQL pool and Redis Cluster are reachable, or reported as not_configured in standalone mode
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: ready
+                  postgres:
+                    type: string
+                    enum:
+                      - connected
+                      - not_configured
+                    example: connected
+                  redis_cluster:
+                    type: string
+                    enum:
+                      - connected
+                      - not_configured
+                    example: connected
+                required:
+                  - status
+                  - postgres
+                  - redis_cluster
+        "503":
+          description: Database pool saturated or upstream dependency unreachable
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /v1/knowledge-bases:
+    post:
+      summary: Create Knowledge Base
+      operationId: createKnowledgeBase
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: Idempotency-Key
+          in: header
+          required: false
+          description: Optional idempotency token for safe retry deduplication
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateKBRequest"
+      responses:
+        "201":
+          description: Knowledge Base created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/KBResponse"
+        "400":
+          description: Invalid taxonomy tag or unsupported model/dimension/metric
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "409":
+          description: Duplicate Knowledge Base name within tenant or Idempotency-Key payload hash conflict
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+    get:
+      summary: List Knowledge Bases
+      operationId: listKnowledgeBases
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: taxonomy_filter
+          in: query
+          required: false
+          description: Hierarchical namespace filter tags (format namespace:key=value)
+          schema:
+            type: array
+            items:
+              type: string
+        - name: page_size
+          in: query
+          required: false
+          description: Maximum number of records to return (1-100, default 20)
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 20
+        - name: page_token
+          in: query
+          required: false
+          description: Opaque cursor token for retrieving the next page
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Paginated list of tenant Knowledge Bases
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ListKBsResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+  /v1/knowledge-bases/{kb_id}:
+    parameters:
+      - $ref: "#/components/parameters/KBIdPathParam"
+    get:
+      summary: Get Knowledge Base
+      operationId: getKnowledgeBase
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: min_version
+          in: query
+          required: false
+          description: >-
+            Minimum causal entity version required by caller; triggers PostgreSQL
+            fallback if cached Redis version is older than min_version
+          schema:
+            type: integer
+            minimum: 1
+      responses:
+        "200":
+          description: Knowledge Base configuration and pointer state
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/KBResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          description: Knowledge Base not found within tenant scope
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "409":
+          description: Minimum version requirement not satisfied
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+    patch:
+      summary: Update Knowledge Base Metadata
+      operationId: updateKnowledgeBase
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateKBRequest"
+      responses:
+        "200":
+          description: Knowledge Base updated and version incremented
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/KBResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          description: Knowledge Base not found within tenant scope
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "409":
+          description: Optimistic concurrency version conflict
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "422":
+          description: "ErrStructuralMutationDisallowed: In-place vector schema mutation rejected"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+    delete:
+      summary: Delete Knowledge Base (Tombstone)
+      operationId: deleteKnowledgeBase
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: expected_version
+          in: query
+          required: true
+          description: Expected monotonic version for Optimistic Concurrency Control
+          schema:
+            type: integer
+            minimum: 1
+      responses:
+        "204":
+          description: Knowledge Base tombstoned and purge event written to outbox
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          description: Knowledge Base not found within tenant scope
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "409":
+          description: Optimistic concurrency version conflict
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /v1/knowledge-bases/{kb_id}:triggerReindexing:
+    parameters:
+      - $ref: "#/components/parameters/KBIdPathParam"
+    post:
+      summary: Trigger Blue-Green Schema Re-Indexing
+      operationId: triggerReindexing
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/TriggerReindexingRequest"
+      responses:
+        "202":
+          description: Re-indexing state initiated, DUAL_WRITE enabled, Temporal backfill DAG triggered
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MigrationResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          description: Knowledge Base not found within tenant scope
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "409":
+          description: Migration already in progress or version mismatch
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /v1/knowledge-bases/{kb_id}:promotePointer:
+    parameters:
+      - $ref: "#/components/parameters/KBIdPathParam"
+    post:
+      summary: Promote Blue Index Pointer
+      operationId: promoteIndexPointer
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PromotePointerRequest"
+      responses:
+        "200":
+          description: Pointer atomically switched to Blue index and version bumped
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/KBResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          description: Knowledge Base not found within tenant scope
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "409":
+          description: "Precondition failed: authoritative delta replay buffer lag > 0, write fence not drained, or OCC conflict"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /v1/knowledge-bases/{kb_id}:abortReindexing:
+    parameters:
+      - $ref: "#/components/parameters/KBIdPathParam"
+    post:
+      summary: Abort Blue-Green Re-Indexing
+      operationId: abortReindexing
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AbortReindexingRequest"
+      responses:
+        "200":
+          description: Migration aborted, search pointer locked to Green, Blue cleanup event emitted
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/KBResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          description: Knowledge Base not found within tenant scope
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "409":
+          description: Migration not in REINDEXING state or version mismatch
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: >-
+        Verified JWT bearer token. Edge Gateway extracts tenant_id, sub (mapped
+        to canonical user_id), and roles into verified request context.
+  responses:
+    Unauthorized:
+      description: Missing or invalid authentication credentials
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+    Forbidden:
+      description: Insufficient RBAC permissions or tenant mismatch
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+  parameters:
+    KBIdPathParam:
+      name: kb_id
+      in: path
+      required: true
+      description: UUIDv4 identifier of the Knowledge Base within the authenticated tenant scope
+      schema:
+        type: string
+        format: uuid
+  schemas:
+    LifecycleState:
+      type: string
+      enum:
+        - CREATING
+        - ACTIVE
+        - REINDEXING
+        - PROMOTED
+        - ABORTED
+        - TOMBSTONED
+    RoutingPolicy:
+      type: string
+      enum:
+        - GREEN_ONLY
+        - DUAL_WRITE
+    DistanceMetric:
+      type: string
+      enum:
+        - COSINE
+        - DOT_PRODUCT
+        - L2
+    VectorSchema:
+      type: object
+      properties:
+        embedding_model:
+          type: string
+          example: text-embedding-3-large
+        dimensions:
+          type: integer
+          minimum: 1
+          example: 1536
+        distance_metric:
+          $ref: "#/components/schemas/DistanceMetric"
+        schema_version:
+          type: string
+          example: v1
+      required:
+        - embedding_model
+        - dimensions
+        - distance_metric
+        - schema_version
+    RetrievalProfile:
+      type: object
+      description: Hybrid search scoring and reranking configuration. dense_weight and sparse_weight cannot both be 0.
+      properties:
+        default_top_k:
+          type: integer
+          minimum: 1
+          maximum: 200
+          example: 15
+        dense_weight:
+          type: number
+          format: float
+          minimum: 0
+          maximum: 1
+          example: 0.7
+        sparse_weight:
+          type: number
+          format: float
+          minimum: 0
+          maximum: 1
+          example: 0.3
+        reranker_candidate_pool_size:
+          type: integer
+          minimum: 1
+          example: 30
+        cross_encoder_confidence_threshold:
+          type: number
+          format: float
+          minimum: 0
+          maximum: 1
+          example: 0.65
+      required:
+        - default_top_k
+        - dense_weight
+        - sparse_weight
+        - reranker_candidate_pool_size
+        - cross_encoder_confidence_threshold
+    KnowledgeBase:
+      type: object
+      properties:
+        tenant_id:
+          type: string
+          readOnly: true
+        kb_id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        description:
+          type: string
+        version:
+          type: string
+          format: uint64
+          pattern: "^[1-9][0-9]*$"
+          example: "1"
+        state:
+          $ref: "#/components/schemas/LifecycleState"
+        routing_policy:
+          $ref: "#/components/schemas/RoutingPolicy"
+        active_index_pointer:
+          type: string
+        candidate_index_pointer:
+          type: string
+        active_schema:
+          $ref: "#/components/schemas/VectorSchema"
+        candidate_schema:
+          $ref: "#/components/schemas/VectorSchema"
+        retrieval_profile:
+          $ref: "#/components/schemas/RetrievalProfile"
+        taxonomy_tags:
+          type: array
+          items:
+            type: string
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+      required:
+        - tenant_id
+        - kb_id
+        - name
+        - version
+        - state
+        - routing_policy
+        - active_index_pointer
+        - active_schema
+        - retrieval_profile
+        - taxonomy_tags
+        - created_at
+        - updated_at
+    KBResponse:
+      type: object
+      properties:
+        knowledge_base:
+          $ref: "#/components/schemas/KnowledgeBase"
+      required:
+        - knowledge_base
+    CreateKBRequest:
+      type: object
+      properties:
+        name:
+          type: string
+        description:
+          type: string
+        vector_schema:
+          $ref: "#/components/schemas/VectorSchema"
+        retrieval_profile:
+          $ref: "#/components/schemas/RetrievalProfile"
+        taxonomy_tags:
+          type: array
+          items:
+            type: string
+        idempotency_key:
+          type: string
+      required:
+        - name
+        - vector_schema
+        - retrieval_profile
+    UpdateKBRequest:
+      type: object
+      description: >-
+        Partial metadata update guarded by Optimistic Concurrency Control
+        (expected_version). Use update_mask (or field presence) to distinguish
+        omitted taxonomy_tags (preserves existing tags) from an explicit empty
+        array [] (clears all tags).
+      properties:
+        expected_version:
+          type: string
+          format: uint64
+          pattern: "^[1-9][0-9]*$"
+          example: "1"
+        name:
+          type: string
+        description:
+          type: string
+        retrieval_profile:
+          $ref: "#/components/schemas/RetrievalProfile"
+        taxonomy_tags:
+          type: array
+          items:
+            type: string
+        update_mask:
+          type: array
+          description: >-
+            Explicit list of fields to mutate (e.g. ["name", "description",
+            "retrieval_profile", "taxonomy_tags"]). Including "taxonomy_tags"
+            with taxonomy_tags: [] clears existing tags; omitting "taxonomy_tags"
+            preserves existing tags.
+          items:
+            type: string
+        attempted_schema_mutation:
+          $ref: "#/components/schemas/VectorSchema"
+      required:
+        - expected_version
+    ListKBsResponse:
+      type: object
+      properties:
+        knowledge_bases:
+          type: array
+          items:
+            $ref: "#/components/schemas/KnowledgeBase"
+        next_page_token:
+          type: string
+      required:
+        - knowledge_bases
+    TriggerReindexingRequest:
+      type: object
+      properties:
+        expected_version:
+          type: string
+          format: uint64
+          pattern: "^[1-9][0-9]*$"
+          example: "1"
+        target_blue_schema:
+          $ref: "#/components/schemas/VectorSchema"
+      required:
+        - expected_version
+        - target_blue_schema
+    MigrationResponse:
+      type: object
+      properties:
+        tenant_id:
+          type: string
+        kb_id:
+          type: string
+          format: uuid
+        migration_id:
+          type: string
+          format: uuid
+        state:
+          $ref: "#/components/schemas/LifecycleState"
+        routing_policy:
+          $ref: "#/components/schemas/RoutingPolicy"
+        candidate_index_pointer:
+          type: string
+        version:
+          type: string
+          format: uint64
+          pattern: "^[1-9][0-9]*$"
+          example: "1"
+      required:
+        - tenant_id
+        - kb_id
+        - migration_id
+        - state
+        - routing_policy
+        - candidate_index_pointer
+        - version
+    PromotePointerRequest:
+      type: object
+      properties:
+        expected_version:
+          type: string
+          format: uint64
+          pattern: "^[1-9][0-9]*$"
+          example: "1"
+        verified_delta_lag_records:
+          type: string
+          format: uint64
+          pattern: "^[0-9]+$"
+          example: "0"
+          description: >-
+            Optional client-observed delta lag assertion compared against the
+            server's authoritative migration lag (kb_migrations.delta_lag_records).
+            Promotion is strictly gated on the server's authoritative delta lag
+            equaling 0 under an active write fence.
+      required:
+        - expected_version
+    AbortReindexingRequest:
+      type: object
+      properties:
+        expected_version:
+          type: string
+          format: uint64
+          pattern: "^[1-9][0-9]*$"
+          example: "1"
+        reason:
+          type: string
+      required:
+        - expected_version
+        - reason
+    ErrorResponse:
+      type: object
+      properties:
+        code:
+          type: string
+          example: STRUCTURAL_MUTATION_DISALLOWED
+        message:
+          type: string
+        request_id:
+          type: string
+      required:
+        - code
+        - message

@@ -1,0 +1,18 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "rag-kb-catalog-service.fullname" . }}-config
+  labels:
+    {{- include "rag-kb-catalog-service.labels" . | nindent 4 }}
+data:
+  PORT: {{ default "8080" (get .Values.env "PORT") | quote }}
+  GRPC_PORT: {{ default "50051" (get .Values.env "GRPC_PORT") | quote }}
+  {{- range $key, $val := .Values.env }}
+  {{- $k := upper $key }}
+  {{- if and (ne $key "secretName") (or (contains "PASSWORD" $k) (contains "SECRET" $k) (contains "TOKEN" $k) (contains "KEY" $k) (contains "DATABASE_URL" $k)) }}
+  {{- fail (printf "Credential-like key '%s' found in env; configure sensitive values under secrets.* instead" $key) }}
+  {{- end }}
+  {{- if and (ne $key "secretName") (ne $key "PORT") (ne $key "GRPC_PORT") (ne $val nil) }}
+  {{ $key }}: {{ $val | quote }}
+  {{- end }}
+  {{- end }}

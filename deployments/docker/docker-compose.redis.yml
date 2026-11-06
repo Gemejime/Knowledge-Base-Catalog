@@ -1,0 +1,35 @@
+# ==============================================================================
+# Local Self-Hosted Redis Development Environment
+# RAG Knowledge Base Catalog Service
+#
+# Usage:
+#   docker compose -f deployments/docker/docker-compose.redis.yml up -d
+#   docker compose -f deployments/docker/docker-compose.redis.yml down
+# ==============================================================================
+
+version: "3.8"
+
+services:
+  redis:
+    image: bitnami/redis:7.2-debian-12
+    container_name: rag-catalog-redis-local
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:6379:6379"
+    environment:
+      - REDIS_PASSWORD=change-me-redis-password
+      - REDIS_AOF_ENABLED=yes
+      - ALLOW_EMPTY_PASSWORD=no
+      - REDIS_PORT_NUMBER=6379
+    volumes:
+      - redis_local_data:/bitnami/redis/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "change-me-redis-password", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+volumes:
+  redis_local_data:
+    driver: local
+

@@ -1,0 +1,55 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: rag-kb-redis-cluster
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+  labels:
+    app.kubernetes.io/name: rag-kb-redis-cluster
+    app.kubernetes.io/part-of: rag-system
+spec:
+  project: default
+  source:
+    chart: redis-cluster
+    repoURL: https://charts.bitnami.com/bitnami
+    targetRevision: 11.1.0
+    helm:
+      releaseName: redis-cluster
+      valuesObject:
+        cluster:
+          init: true
+          nodes: 6
+          replicas: 1
+        existingSecret: rag-kb-catalog-service-secret
+        existingSecretPasswordKey: REDIS_PASSWORD
+        resources:
+          requests:
+            cpu: 100m
+            memory: 256Mi
+          limits:
+            cpu: 500m
+            memory: 1Gi
+        persistence:
+          enabled: true
+          size: 5Gi
+        metrics:
+          enabled: true
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: rag-system
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+      - ApplyOutOfSyncOnly=true
+      - PruneLast=true
+    retry:
+      limit: 5
+      backoff:
+        duration: 5s
+        factor: 2
+        maxDuration: 3m
+

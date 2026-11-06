@@ -1,0 +1,87 @@
+# ==============================================================================
+# Bitnami Redis Cluster Helm Values for rag-kb-catalog-service
+# Chart: bitnami/redis-cluster (Redis 7.2+)
+#
+# Production High-Availability configuration with:
+# - 6-Node Clustered Sharding (3 Masters + 3 Replicas)
+# - Sub-millisecond pod-to-pod networking (P99 <= 0.8ms)
+# - CRC16 slot co-location support (ADR-003)
+# - Prometheus metrics exporter enabled (port 9121)
+# ==============================================================================
+
+# ------------------------------------------------------------------------------
+# 1. Cluster Topology
+# ------------------------------------------------------------------------------
+cluster:
+  init: true
+  # 6 total nodes = 3 Primary shards + 3 Secondary replicas
+  nodes: 6
+  replicas: 1
+  # Automatic cluster rebalancing on node recovery
+  externalEnpoints: []
+
+# ------------------------------------------------------------------------------
+# 2. Authentication & Secrets
+# ------------------------------------------------------------------------------
+# References the shared application secret for zero credential drift
+existingSecret: "rag-kb-catalog-service-secret"
+existingSecretPasswordKey: "REDIS_PASSWORD"
+
+# ------------------------------------------------------------------------------
+# 3. Container Image (Redis 7.2)
+# ------------------------------------------------------------------------------
+image:
+  registry: docker.io
+  repository: bitnami/redis-cluster
+  tag: 7.2-debian-12
+  pullPolicy: IfNotPresent
+
+# ------------------------------------------------------------------------------
+# 4. Resource Allocation & Sizing
+# ------------------------------------------------------------------------------
+# Sized comfortably for 3,000 RPS catalog reads with P99 <= 5ms
+resources:
+  requests:
+    cpu: 100m
+    memory: 256Mi
+  limits:
+    cpu: 500m
+    memory: 1Gi
+
+# ------------------------------------------------------------------------------
+# 5. Persistence & Durability
+# ------------------------------------------------------------------------------
+# AOF (Append Only File) + RDB snapshots for instant pod crash recovery
+persistence:
+  enabled: true
+  size: 5Gi
+  # storageClass: "gp3" # Set to cloud provisioner if overriding cluster default
+
+# ------------------------------------------------------------------------------
+# 6. High Availability & Scheduling
+# ------------------------------------------------------------------------------
+# Spread Redis master/replica pods across different Kubernetes nodes/zones
+podAntiAffinityPreset: soft
+nodeSelector: {}
+tolerations: []
+
+# ------------------------------------------------------------------------------
+# 7. Observability & Prometheus Metrics
+# ------------------------------------------------------------------------------
+metrics:
+  enabled: true
+  service:
+    type: ClusterIP
+    port: 9121
+    annotations:
+      prometheus.io/scrape: "true"
+      prometheus.io/port: "9121"
+      prometheus.io/path: "/metrics"
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      cpu: 100m
+      memory: 128Mi
+
