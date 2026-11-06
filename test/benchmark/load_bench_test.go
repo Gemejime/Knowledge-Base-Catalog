@@ -287,12 +287,20 @@ func TestLoad_OCCMutationLatency_P99Sub20ms(t *testing.T) {
 	const totalWrites = 500
 	const concurrency = 10
 
+	kbIDs := make([]string, totalWrites)
 	// Seed tenant entities to test concurrent write distribution without false conflicts
 	for i := 0; i < totalWrites; i++ {
 		tID := fmt.Sprintf("tenant-write-sli-%d", i)
-		kbID := fmt.Sprintf("kb-write-sli-%d", i)
+		kbID, err := entity.NewUUIDv4()
+		if err != nil {
+			t.Fatalf("failed to generate UUID for KB seed: %v", err)
+		}
+		kbIDs[i] = kbID
 		kb := createBenchmarkKB(tID, kbID, 1)
-		evt, _ := event.NewOutboxEvent(kb, event.EventKBCreated, nil, time.Now().UTC())
+		evt, err := event.NewOutboxEvent(kb, event.EventKBCreated, nil, time.Now().UTC())
+		if err != nil {
+			t.Fatalf("failed to create outbox event: %v", err)
+		}
 		if err := repo.Create(ctx, kb, evt, nil); err != nil {
 			t.Fatalf("failed to seed: %v", err)
 		}
@@ -316,7 +324,7 @@ func TestLoad_OCCMutationLatency_P99Sub20ms(t *testing.T) {
 			defer wg.Done()
 			for reqID := range workChan {
 				tID := fmt.Sprintf("tenant-write-sli-%d", reqID)
-				kbID := fmt.Sprintf("kb-write-sli-%d", reqID)
+				kbID := kbIDs[reqID]
 
 				kb, err := repo.GetByID(ctx, tID, kbID)
 				if err != nil {
@@ -426,9 +434,4 @@ func TestLoad_MemoryFootprintHeap_Sub128MB(t *testing.T) {
 	if memAfter.Sys > maxAllowedBytes*2 { // Guard total OS virtual allocation
 		t.Fatalf("Total Sys allocation excessive: got %d bytes", memAfter.Sys)
 	}
-}
-
-// TestLoad_MemoryFootprintRSS_Sub128MB preserves backward-compatibility with CI test runner.
-func TestLoad_MemoryFootprintRSS_Sub128MB(t *testing.T) {
-	TestLoad_MemoryFootprintHeap_Sub128MB(t)
 }

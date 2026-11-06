@@ -187,6 +187,9 @@ func TestLoad_ValidationAndDefaults(t *testing.T) {
 	// 2. Default addresses and levels
 	t.Setenv("JWT_HMAC_SECRET", "super-secret-jwt-key-minimum-32-chars-long")
 	t.Setenv("LOG_LEVEL", "")
+	_ = os.Unsetenv("HTTP_ADDR")
+	_ = os.Unsetenv("HTTP_PORT")
+	_ = os.Unsetenv("PORT")
 	cfg, err := Load(emptyEnv)
 	if err != nil {
 		t.Fatalf("unexpected error loading config: %v", err)

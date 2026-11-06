@@ -131,18 +131,27 @@ func main() {
 
 	var readinessCheck httptransport.ReadinessCheckFunc
 	if dbPool != nil || len(cfg.Redis.Addrs) > 0 {
-		readinessCheck = func(checkCtx context.Context) (bool, bool, error) {
+		readinessCheck = func(checkCtx context.Context) (httptransport.DependencyStatus, httptransport.DependencyStatus, error) {
+			pgStatus := httptransport.DependencyStatusNotConfigured
 			if dbPool != nil {
 				if err := dbPool.Ping(checkCtx); err != nil {
-					return false, false, err
+					return httptransport.DependencyStatusDisconnected, httptransport.DependencyStatusNotConfigured, err
 				}
+				pgStatus = httptransport.DependencyStatusConnected
 			}
-			if len(cfg.Redis.Addrs) > 0 && redisPinger != nil {
+
+			redisStatus := httptransport.DependencyStatusNotConfigured
+			if len(cfg.Redis.Addrs) > 0 {
+				if redisPinger == nil {
+					return pgStatus, httptransport.DependencyStatusDisconnected, errors.New("redis client not initialized")
+				}
 				if err := redisPinger.Ping(checkCtx); err != nil {
-					return true, false, err
+					return pgStatus, httptransport.DependencyStatusDisconnected, err
 				}
+				redisStatus = httptransport.DependencyStatusConnected
 			}
-			return true, true, nil
+
+			return pgStatus, redisStatus, nil
 		}
 	}
 

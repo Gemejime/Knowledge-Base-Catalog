@@ -297,14 +297,14 @@ func TestReadinessProbeWithRedisAndPostgresHealth(t *testing.T) {
 	memCache := rediscache.NewInMemoryVersionedCache()
 	pgHealthy := true
 
-	readinessCheck := func(ctx context.Context) (bool, bool, error) {
+	readinessCheck := func(ctx context.Context) (httptransport.DependencyStatus, httptransport.DependencyStatus, error) {
 		if !pgHealthy {
-			return false, true, errors.New("postgres connection pool exhausted")
+			return httptransport.DependencyStatusDisconnected, httptransport.DependencyStatusConnected, errors.New("postgres connection pool exhausted")
 		}
 		if err := memCache.Ping(ctx); err != nil {
-			return true, false, err
+			return httptransport.DependencyStatusConnected, httptransport.DependencyStatusDisconnected, err
 		}
-		return true, true, nil
+		return httptransport.DependencyStatusConnected, httptransport.DependencyStatusConnected, nil
 	}
 
 	handler := httptransport.NewHandler(

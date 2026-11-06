@@ -90,8 +90,8 @@ func newTestHarness(t *testing.T) *testHarness {
 	getQuery := query.NewGetKnowledgeBaseQuery(repo, nil)
 	listQuery := query.NewListKnowledgeBasesQuery(repo)
 
-	readiness := func(_ context.Context) (bool, bool, error) {
-		return true, true, nil
+	readiness := func(_ context.Context) (httptransport.DependencyStatus, httptransport.DependencyStatus, error) {
+		return httptransport.DependencyStatusConnected, httptransport.DependencyStatusConnected, nil
 	}
 
 	httpHandler := httptransport.NewHandler(
@@ -213,6 +213,25 @@ func TestHTTPProbesDocAPIAndFullLifecycle(t *testing.T) {
 	_ = json.Unmarshal(standaloneRec.Body.Bytes(), &readyBody)
 	if readyBody["postgres"] != "not_configured" || readyBody["redis_cluster"] != "not_configured" {
 		t.Fatalf("expected standalone ready probe to report not_configured, got: %+v", readyBody)
+	}
+
+	// 1a-2. Verify partial dependency readiness mapping (postgres connected, redis not configured)
+	partialHandler := httptransport.NewHandler(nil, nil, nil, nil, nil, nil, nil, nil,
+		func(ctx context.Context) (httptransport.DependencyStatus, httptransport.DependencyStatus, error) {
+			return httptransport.DependencyStatusConnected, httptransport.DependencyStatusNotConfigured, nil
+		},
+		nil,
+	)
+	partialRec := httptest.NewRecorder()
+	partialReq := httptest.NewRequest(http.MethodGet, "/ready", nil)
+	partialHandler.Ready(partialRec, partialReq)
+	if partialRec.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK from partial ready, got %d", partialRec.Code)
+	}
+	var partialBody map[string]string
+	_ = json.Unmarshal(partialRec.Body.Bytes(), &partialBody)
+	if partialBody["postgres"] != "connected" || partialBody["redis_cluster"] != "not_configured" {
+		t.Fatalf("expected partial ready probe to report postgres connected and redis not_configured, got: %+v", partialBody)
 	}
 
 	// 1b. /metrics is removed from the public router (returns 404) and served exclusively via internal metrics router

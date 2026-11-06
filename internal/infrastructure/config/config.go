@@ -400,18 +400,6 @@ func envOrDefault(key, fallback string) string {
 	return fallback
 }
 
-func parseEnvInt(key string, fallback int) int {
-	v := strings.TrimSpace(os.Getenv(key))
-	if v == "" {
-		return fallback
-	}
-	n, err := strconv.Atoi(v)
-	if err != nil {
-		return fallback
-	}
-	return n
-}
-
 func parseEnvDuration(key string, fallback time.Duration) time.Duration {
 	v := strings.TrimSpace(os.Getenv(key))
 	if v == "" {

@@ -16,8 +16,20 @@ import (
 	"github.com/gemejime/rag-kb-catalog-service/internal/transport/http/middleware"
 )
 
+// DependencyStatus represents the connectivity state of an upstream dependency.
+type DependencyStatus string
+
+const (
+	// DependencyStatusConnected indicates the upstream dependency is reachable and healthy.
+	DependencyStatusConnected DependencyStatus = "connected"
+	// DependencyStatusNotConfigured indicates the upstream dependency is not configured for this instance.
+	DependencyStatusNotConfigured DependencyStatus = "not_configured"
+	// DependencyStatusDisconnected indicates the upstream dependency was configured but failed health checks.
+	DependencyStatusDisconnected DependencyStatus = "disconnected"
+)
+
 // ReadinessCheckFunc evaluates upstream PostgreSQL and Redis Cluster connectivity for GET /ready.
-type ReadinessCheckFunc func(ctx context.Context) (postgresConnected bool, redisConnected bool, err error)
+type ReadinessCheckFunc func(ctx context.Context) (postgresStatus DependencyStatus, redisStatus DependencyStatus, err error)
 
 // Handler serves the OpenAPI 3.1 administrative REST endpoints, Doc API UI routes, and operational probes.
 type Handler struct {
@@ -74,20 +86,20 @@ func (h *Handler) Ready(w http.ResponseWriter, r *http.Request) {
 	if h.readinessCheck == nil {
 		WriteJSON(w, http.StatusOK, map[string]string{
 			"status":        "ready",
-			"postgres":      "not_configured",
-			"redis_cluster": "not_configured",
+			"postgres":      string(DependencyStatusNotConfigured),
+			"redis_cluster": string(DependencyStatusNotConfigured),
 		})
 		return
 	}
-	pgOK, redisOK, err := h.readinessCheck(r.Context())
-	if err != nil || !pgOK || !redisOK {
+	pgStatus, redisStatus, err := h.readinessCheck(r.Context())
+	if err != nil || pgStatus == DependencyStatusDisconnected || redisStatus == DependencyStatusDisconnected {
 		WriteError(w, http.StatusServiceUnavailable, "SERVICE_UNAVAILABLE", "upstream dependency unreachable", reqID)
 		return
 	}
 	WriteJSON(w, http.StatusOK, map[string]string{
 		"status":        "ready",
-		"postgres":      "connected",
-		"redis_cluster": "connected",
+		"postgres":      string(pgStatus),
+		"redis_cluster": string(redisStatus),
 	})
 }
 
