@@ -126,6 +126,8 @@
     - **Deployment & Helm Chart Security**: Added `secrets.manageSecret` condition and pod template secret hash annotation (`checksum/secret`). Enforced fail guard against credential-like keys in ConfigMap. Updated `P99ReadLatencyDegradation` alert description. Switched Helm injection in CI to `--set-literal`.
     - **Secret Rotation & Runbook Reliability**: Reworked database credential rotation runbook to use a dual-role transition procedure, preventing downtime during rolling restarts. Clarified single-key JWT rotation impact.
     - **Sync & Benchmark Robustness**: Extended URL credential detection to match empty usernames, escaped newlines in YAML generator, declared `requirements.txt`, and generated UUIDs for benchmark seeding.
+    - **Redis Cluster & Deployment Hardening**: Local docker-compose mapped Redis port to `127.0.0.1:6379`, moved `existingSecret` to top-level values for the Bitnami Redis Cluster chart and GitOps manifest, updated deployment scripts with strict error exits and cluster slot verification (`cluster_state:ok`, `16384` slots), and removed `.env.prod` sync from CI runner.
+    - **Documentation Delivery**: Authored root `README.md` and `architecture.md` detailing the 5-layer hexagonal architecture, Blue-Green migration protocol, versioned caching, and SLIs/SLOs.
 
 
 
