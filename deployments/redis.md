@@ -131,14 +131,35 @@ REDIS_PASSWORD="change-me-to-a-secure-redis-password"
 python scripts/sync_env_to_deployments.py --sync
 ```
 
-### 3. Update REDIS_PASSWORD in Shared Secret:
-Update `REDIS_PASSWORD` through the shared Secret's owner (e.g. CI/CD secret injection or strategic merge patch) to preserve existing `JWT_HMAC_SECRET`, `POSTGRES_PASSWORD`, and `DATABASE_URL` keys in `rag-kb-catalog-service-secret`:
-```bash
-kubectl patch secret rag-kb-catalog-service-secret \
-  --namespace rag-system \
-  --type merge \
-  -p '{"stringData":{"REDIS_PASSWORD":"change-me-to-a-secure-redis-password"}}'
-```
+### 3. Coordinate REDIS_PASSWORD Rotation Across Workloads:
+
+> [!IMPORTANT] **Workload Synchronization Requirement**:
+> Because `rag-kb-catalog-service` authenticates to Redis Cluster using `REDIS_PASSWORD` from `rag-kb-catalog-service-secret`, the owning deployment system (CI/CD pipeline, GitOps operator, or Vault) must update Redis Cluster and the shared Secret together. Both workloads must roll out with the same password so restarted pods cannot attempt connection with mismatched credentials (`WRONGPASS invalid username-password pair`).
+
+1. **Update the Shared Secret**:
+   Update `REDIS_PASSWORD` through the shared Secret's owner (preserving existing `JWT_HMAC_SECRET`, `POSTGRES_PASSWORD`, and `DATABASE_URL` keys in `rag-kb-catalog-service-secret`):
+   ```bash
+   kubectl patch secret rag-kb-catalog-service-secret \
+     --namespace rag-system \
+     --type merge \
+     -p '{"stringData":{"REDIS_PASSWORD":"change-me-to-a-secure-redis-password"}}'
+   ```
+
+2. **Roll Out Redis Cluster StatefulSet**:
+   Apply the updated secret and roll out the Redis Cluster StatefulSet so all cluster nodes initialize with the new password:
+   ```bash
+   helm upgrade redis-cluster bitnami/redis-cluster \
+     --namespace rag-system \
+     -f deployments/helm/redis-cluster/values.yaml
+   kubectl rollout status statefulset/redis-cluster -n rag-system --timeout=300s
+   ```
+
+3. **Roll Out Catalog Service Deployment**:
+   Once the Redis Cluster is ready, roll out the catalog service pods to consume the updated password and re-establish authenticated cluster connections:
+   ```bash
+   kubectl rollout restart deployment/rag-kb-catalog-service -n rag-system
+   kubectl rollout status deployment/rag-kb-catalog-service -n rag-system --timeout=300s
+   ```
 
 ---
 
