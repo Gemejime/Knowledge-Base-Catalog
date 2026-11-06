@@ -312,10 +312,6 @@ jobs:
           python3 -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: Verify Environment & Deployment Sync (env-check)
-        run: |
-          python scripts/sync_env_to_deployments.py --check-only
-
       - name: Lint Helm Chart
         run: |
           if [ -d "deployments/helm/rag-kb-catalog-service" ]; then

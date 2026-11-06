@@ -43,7 +43,18 @@ kubectl rollout status statefulset/"$RELEASE_NAME" -n "$NAMESPACE" --timeout=300
 
 # 6. Verify Redis Cluster Topology
 echo "Verifying Redis Cluster topology..."
-kubectl exec -n "$NAMESPACE" "${RELEASE_NAME}-0" -- redis-cli -c -a "$(kubectl get secret rag-kb-catalog-service-secret -n "$NAMESPACE" -o jsonpath='{.data.REDIS_PASSWORD}' | base64 -d)" cluster info | grep -E 'cluster_state|cluster_slots_assigned|cluster_known_nodes'
+CLUSTER_INFO=$(kubectl exec -n "$NAMESPACE" "${RELEASE_NAME}-0" -- redis-cli -c -a "$(kubectl get secret rag-kb-catalog-service-secret -n "$NAMESPACE" -o jsonpath='{.data.REDIS_PASSWORD}' | base64 -d)" cluster info)
+echo "$CLUSTER_INFO" | grep -E 'cluster_state|cluster_slots_assigned|cluster_known_nodes'
+
+if ! echo "$CLUSTER_INFO" | grep -q "^cluster_state:ok"; then
+  echo "Error: Redis cluster_state is not 'ok'" >&2
+  exit 1
+fi
+
+if ! echo "$CLUSTER_INFO" | grep -q "^cluster_slots_assigned:16384"; then
+  echo "Error: Redis cluster_slots_assigned is not '16384'" >&2
+  exit 1
+fi
 
 echo "=== Redis Cluster Successfully Deployed & Verified! ==="
 echo "Internal Cluster DNS: ${RELEASE_NAME}-headless.${NAMESPACE}.svc.cluster.local:6379"

@@ -23,11 +23,9 @@ cluster:
 # ------------------------------------------------------------------------------
 # 2. Authentication & Secrets
 # ------------------------------------------------------------------------------
-global:
-  redis:
-    # References the shared application secret for zero credential drift
-    existingSecret: "rag-kb-catalog-service-secret"
-    existingSecretPasswordKey: "REDIS_PASSWORD"
+# References the shared application secret for zero credential drift
+existingSecret: "rag-kb-catalog-service-secret"
+existingSecretPasswordKey: "REDIS_PASSWORD"
 
 # ------------------------------------------------------------------------------
 # 3. Container Image (Redis 7.2)

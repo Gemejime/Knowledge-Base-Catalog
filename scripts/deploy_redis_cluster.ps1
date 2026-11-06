@@ -36,10 +36,18 @@ helm upgrade --install $ReleaseName bitnami/redis-cluster `
     -f $ValuesFile `
     --wait `
     --timeout 10m
+if ($LASTEXITCODE -ne 0) {
+    Write-Error "Helm upgrade failed with exit code $LASTEXITCODE."
+    exit $LASTEXITCODE
+}
 
 # 5. Check rollout status
 Write-Host "Waiting for Redis Cluster pods to reach Ready state..."
 kubectl rollout status statefulset/$ReleaseName -n $Namespace --timeout=300s
+if ($LASTEXITCODE -ne 0) {
+    Write-Error "Kubectl rollout status failed with exit code $LASTEXITCODE."
+    exit $LASTEXITCODE
+}
 
 Write-Host "=== Redis Cluster Successfully Deployed! ===" -ForegroundColor Green
 Write-Host "Internal Cluster DNS: ${ReleaseName}-headless.${Namespace}.svc.cluster.local:6379"

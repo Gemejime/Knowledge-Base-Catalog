@@ -253,6 +253,7 @@ def check_drift(env_path: Path, values_paths: list[Path]) -> bool:
 
 
 def main() -> int:
+    """CLI entrypoint for environment synchronization and drift detection."""
     parser = argparse.ArgumentParser(
         description="Sync and validate environment variables between .env.prod and Helm deployments."
     )

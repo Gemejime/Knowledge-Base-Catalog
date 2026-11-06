@@ -131,12 +131,13 @@ REDIS_PASSWORD="change-me-to-a-secure-redis-password"
 python scripts/sync_env_to_deployments.py --sync
 ```
 
-### 3. Inject Password into Kubernetes Secret:
+### 3. Update REDIS_PASSWORD in Shared Secret:
+Update `REDIS_PASSWORD` through the shared Secret's owner (e.g. CI/CD secret injection or strategic merge patch) to preserve existing `JWT_HMAC_SECRET`, `POSTGRES_PASSWORD`, and `DATABASE_URL` keys in `rag-kb-catalog-service-secret`:
 ```bash
-kubectl create secret generic rag-kb-catalog-service-secret \
+kubectl patch secret rag-kb-catalog-service-secret \
   --namespace rag-system \
-  --from-literal=REDIS_PASSWORD="change-me-to-a-secure-redis-password" \
-  --dry-run=client -o yaml | kubectl apply -f -
+  --type merge \
+  -p '{"stringData":{"REDIS_PASSWORD":"change-me-to-a-secure-redis-password"}}'
 ```
 
 ---

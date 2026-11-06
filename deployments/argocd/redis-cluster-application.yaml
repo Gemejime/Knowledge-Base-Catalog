@@ -21,10 +21,8 @@ spec:
           init: true
           nodes: 6
           replicas: 1
-        global:
-          redis:
-            existingSecret: rag-kb-catalog-service-secret
-            existingSecretPasswordKey: REDIS_PASSWORD
+        existingSecret: rag-kb-catalog-service-secret
+        existingSecretPasswordKey: REDIS_PASSWORD
         resources:
           requests:
             cpu: 100m
