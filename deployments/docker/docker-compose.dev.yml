@@ -52,3 +52,4 @@ volumes:
     driver: local
   redis_local_data:
     driver: local
+
