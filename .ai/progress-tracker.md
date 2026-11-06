@@ -128,6 +128,7 @@
     - **Sync & Benchmark Robustness**: Extended URL credential detection to match empty usernames, escaped newlines in YAML generator, declared `requirements.txt`, and generated UUIDs for benchmark seeding.
     - **Redis Cluster & Deployment Hardening**: Local docker-compose mapped Redis port to `127.0.0.1:6379`, moved `existingSecret` to top-level values for the Bitnami Redis Cluster chart and GitOps manifest, updated deployment scripts with strict error exits and cluster slot verification (`cluster_state:ok`, `16384` slots), and removed `.env.prod` sync from CI runner.
     - **Documentation Delivery**: Authored root `README.md` and `architecture.md` detailing the 5-layer hexagonal architecture, Blue-Green migration protocol, versioned caching, and SLIs/SLOs.
+    - **Workload Credential Coordination & Local Dev Alignment**: Documented synchronized Redis and catalog workload rotation in `deployments/redis.md`, added `deployments/docker/docker-compose.dev.yml` with PostgreSQL 16 and Redis, and aligned README Go 1.26 prerequisites and `NewClusterClient` startup configuration.
 
 
 

@@ -1,6 +1,6 @@
 # RAG Knowledge Base Catalog Service (`rag-kb-catalog-service`)
 
-[![Go Version](https://img.shields.io/badge/Go-1.23%2B-00ADD8?style=flat&logo=go)](https://golang.org)
+[![Go Version](https://img.shields.io/badge/Go-1.26%2B-00ADD8?style=flat&logo=go)](https://golang.org)
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
 [![Architecture](https://img.shields.io/badge/Architecture-Hexagonal%20%2F%20Ports%20%26%20Adapters-orange.svg)](#architecture--hexagonal-design)
 [![Security](https://img.shields.io/badge/Runtime-Distroless%20Non--Root-success.svg)](deployments/docker/Dockerfile)
@@ -153,28 +153,52 @@ The service natively serves interactive API documentation and contracts on its H
 
 ### Prerequisites
 
-- **Go**: 1.23 or newer
-- **Docker & Docker Compose**: For local PostgreSQL, Redis, and Temporal dependencies
+- **Go**: 1.26 or newer
+- **Docker & Docker Compose**: For local PostgreSQL and Redis dependencies
 - **Helm 3**: For chart linting and template verification (optional)
 - **Make**: For running lifecycle targets
 
 ### Local Infrastructure Setup
 
-Spin up local Redis for development:
+You can run the service in two modes:
 
-```bash
-docker compose -f deployments/docker/docker-compose.redis.yml up -d
-```
+#### Option A: Zero-Infrastructure Standalone Mode (Fastest)
 
-### Environment Configuration
-
-Copy the documented environment template:
+The service natively supports standalone development mode without requiring external containers. When `DATABASE_URL` and `REDIS_CLUSTER_ADDRS` are left empty, it runs with high-performance in-memory catalog storage and versioned caching:
 
 ```bash
 cp .env.example .env
 ```
+Ensure `DATABASE_URL=""` and `REDIS_CLUSTER_ADDRS=""` in `.env`, set `JWT_HMAC_SECRET` (at least 32 bytes), and launch directly.
 
-Ensure `JWT_HMAC_SECRET` is set to a secure string of at least 32 bytes (256 bits).
+#### Option B: Local Dependencies with Docker Compose
+
+To run with real PostgreSQL 16 and Redis containers:
+
+```bash
+# Start both PostgreSQL 16 and Redis
+docker compose -f deployments/docker/docker-compose.dev.yml up -d
+```
+
+### Environment Configuration
+
+Configure `.env` to match the started services:
+
+1. **JWT Secret**:
+   ```bash
+   JWT_HMAC_SECRET="change-me-to-a-secure-random-at-least-32-byte-secret-key"
+   ```
+
+2. **PostgreSQL 16**:
+   Points to the started local PostgreSQL container:
+   ```bash
+   DATABASE_URL="postgres://rag_catalog_user:change-me-postgres-password@127.0.0.1:5432/rag_catalog?sslmode=disable"
+   ```
+
+3. **Redis Caching & Cluster Checks**:
+   The service uses `NewClusterClient` (`go-redis/v9.ClusterClient`) conforming to ADR-003, which runs cluster discovery and ping checks on startup.
+   - **Standalone Redis (from Compose)**: Leave `REDIS_CLUSTER_ADDRS=""` in `.env` so `rag-kb-catalog-service` uses the in-memory versioned cache alongside the local PostgreSQL database, bypassing cluster slot discovery.
+   - **Full Redis Cluster**: To test full cluster routing locally, deploy a local 6-node cluster via Helm (`./scripts/deploy_redis_cluster.sh`) and configure `REDIS_CLUSTER_ADDRS="localhost:7000,localhost:7001,localhost:7002"`.
 
 ### Running the Service
 
