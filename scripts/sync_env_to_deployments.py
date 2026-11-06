@@ -67,7 +67,7 @@ def is_sensitive(key: str, value: str = "") -> bool:
     key_upper = key.upper()
     if any(pattern in key_upper for pattern in SENSITIVE_PATTERNS):
         return True
-    if "://" in value and "@" in value and re.search(r"://[^:]+:[^@]+@", value):
+    if "://" in value and "@" in value and re.search(r"://[^:]*:[^@]+@", value):
         return True
     return False
 
@@ -156,7 +156,13 @@ def update_values_file(values_path: Path, prod_env: dict[str, str]) -> None:
 
     new_env_lines = ["env:\n"]
     for k, v in filtered_env.items():
-        escaped_v = str(v).replace("\\", "\\\\").replace('"', '\\"')
+        escaped_v = (
+            str(v)
+            .replace("\\", "\\\\")
+            .replace('"', '\\"')
+            .replace("\r", "\\r")
+            .replace("\n", "\\n")
+        )
         new_env_lines.append(f'  {k}: "{escaped_v}"\n')
 
     if env_start_idx is None:

@@ -211,9 +211,12 @@ flowchart TD
 
 ---
 
-## 6. Zero-Downtime Secret Rotation Runbook
+## 6. Secret Rotation Runbook
 
 ### A. Rotating `JWT_HMAC_SECRET`
+
+> [!WARNING] **Rotation Impact**: The service accepts a single signing key at any given time. During rollout across multiple replicas, tokens signed by the other key can receive 401 Unauthorized responses from pods that have not yet or have already reloaded the secret, and tokens minted with the old key will remain rejected until client renewal or expiry. Coordinate rotations during scheduled maintenance windows or client credential grace periods.
+
 1. Update `JWT_HMAC_SECRET` in GitHub Secrets or Cloud Secret Store.
 2. Trigger secret injection:
    - For GitHub Actions: Run the `cd-secret-injection-and-deployment` workflow.
@@ -221,13 +224,27 @@ flowchart TD
 3. Rolling restart:
    ```bash
    kubectl rollout restart deployment/rag-kb-catalog-service -n rag-system
+   kubectl rollout status deployment/rag-kb-catalog-service -n rag-system
    ```
 
 ### B. Rotating `POSTGRES_PASSWORD` or `DATABASE_URL`
-1. Alter password on PostgreSQL / PgBouncer instance (or regenerate in Neon dashboard).
-2. Update `POSTGRES_PASSWORD` and/or `DATABASE_URL` in GitHub Actions Secrets or Cloud Secret Store.
-3. Apply updated Secret to Kubernetes.
+
+To ensure running pods never lose database access during rotation:
+
+1. Create a second database login role with the new password and grant it necessary application permissions:
+   ```sql
+   CREATE ROLE rag_catalog_user_v2 WITH LOGIN PASSWORD 'new-secure-password';
+   GRANT rag_catalog_app_role TO rag_catalog_user_v2;
+   ```
+2. Update `POSTGRES_PASSWORD` and/or `DATABASE_URL` with the new role credentials in GitHub Actions Secrets or Cloud Secret Store.
+3. Apply updated Secret to Kubernetes (via GitHub Actions workflow or ESO).
 4. Perform rolling restart of `deployment/rag-kb-catalog-service`:
    ```bash
    kubectl rollout restart deployment/rag-kb-catalog-service -n rag-system
+   kubectl rollout status deployment/rag-kb-catalog-service -n rag-system
+   ```
+5. Only after the rollout succeeds and all pods are confirmed healthy on the new role, revoke and drop the old database role:
+   ```sql
+   REVOKE rag_catalog_app_role FROM rag_catalog_user_v1;
+   DROP ROLE rag_catalog_user_v1;
    ```

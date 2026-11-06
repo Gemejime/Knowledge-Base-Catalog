@@ -1,0 +1,2 @@
+# Python dependencies for repository automation, linting, and deployment sync
+PyYAML>=6.0.1

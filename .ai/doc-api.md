@@ -229,7 +229,7 @@ The `rag-kb-catalog-service` runs an HTTP server (default port `8080`) serving O
             }
           },
           "409": {
-            "description": "Minimum version requirement not satisfied or OCC version conflict",
+            "description": "Minimum version requirement not satisfied",
             "content": {
               "application/json": {
                 "schema": { "$ref": "#/components/schemas/ErrorResponse" }
@@ -1021,8 +1021,8 @@ CREATE TABLE IF NOT EXISTS idempotency_keys (
 
 | Alert Name | Severity | Duration | PromQL Expression | Threshold / Condition |
 | :--- | :--- | :--- | :--- | :--- |
-| **HighMutationConflictRate** | `warning` | `5m` | `sum(rate(kb_catalog_optimistic_conflicts_total[5m])) / sum(rate(kb_catalog_requests_total{method=~"(PATCH|POST|DELETE) /v1/knowledge-bases.*|.*/(Create|Update|Trigger|Promote|Abort|Delete).*"}[5m])) > 0.05` | OCC conflict rate > 5% of mutation traffic over 5m |
-| **P99ReadLatencyDegradation** | `warning` | `3m` | `histogram_quantile(0.99, sum(rate(kb_catalog_request_duration_seconds_bucket{method=~"GET /v1/knowledge-bases/\\{kb_id\\}|.*/GetKnowledgeBase"}[3m])) by (le)) > 0.010` | P99 direct read latency > 10ms for 3m (SLO: <= 5ms) |
+| **HighMutationConflictRate** | `warning` | `5m` | `sum(rate(kb_catalog_optimistic_conflicts_total[5m])) / sum(rate(kb_catalog_requests_total{method=~"(PATCH\|POST\|DELETE) /v1/knowledge-bases.*\|.*/(Create\|Update\|Trigger\|Promote\|Abort\|Delete).*"}[5m])) > 0.05` | OCC conflict rate > 5% of mutation traffic over 5m |
+| **P99ReadLatencyDegradation** | `warning` | `3m` | `histogram_quantile(0.99, sum(rate(kb_catalog_request_duration_seconds_bucket{method=~"GET /v1/knowledge-bases/\\{kb_id\\}\|.*/GetKnowledgeBase"}[3m])) by (le)) > 0.010` | P99 read latency > 10ms for 3m (SLO: <= 5ms) |
 | **ReindexConvergenceStall** | `critical` | `15m` | `kb_catalog_migration_delta_lag_records > 0 and (deriv(kb_catalog_migration_delta_lag_records[15m]) >= 0)` | Migration delta buffer lag > 0 without decrease for 15m |
 | **DatabasePoolSaturation** | `critical` | `2m` | `(pgx_pool_acquired_conns / pgx_pool_max_conns) > 0.85` | PostgreSQL pgx connection pool utilization > 85% for 2m |
 

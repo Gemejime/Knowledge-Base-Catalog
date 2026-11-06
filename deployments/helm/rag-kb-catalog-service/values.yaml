@@ -119,6 +119,7 @@ env:
   TEMPORAL_NAMESPACE: "rag-ingestion"
   TEMPORAL_TASK_QUEUE: "rag-ingestion-v1"
 secrets:
+  manageSecret: true
   postgresPassword: "change-me-postgres-password"
   redisPassword: "change-me-redis-password"
   jwtHmacSecret: ""

@@ -30,7 +30,7 @@ spec:
             service: {{ include "rag-kb-catalog-service.name" . }}
           annotations:
             summary: "P99 read latency degradation (>10ms)"
-            description: "P99 direct-cache read latency for GetKnowledgeBase exceeded 10ms for more than 3 minutes (SLO: <= 5ms). Investigate Redis Cluster load or network latency."
+            description: "P99 read latency for GetKnowledgeBase handler (including Redis reads and PostgreSQL fallback) exceeded 10ms for more than 3 minutes (SLO: <= 5ms). Investigate Redis Cluster latency and PostgreSQL fallback load."
 
         - alert: ReindexConvergenceStall
           expr: kb_catalog_migration_delta_lag_records > 0 and (deriv(kb_catalog_migration_delta_lag_records[15m]) >= 0)

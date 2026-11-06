@@ -307,11 +307,20 @@ jobs:
         with:
           version: "v3.16.2"
 
+      - name: Install Python Dependencies
+        run: |
+          python3 -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Verify Environment & Deployment Sync (env-check)
+        run: |
+          python scripts/sync_env_to_deployments.py --check-only
+
       - name: Lint Helm Chart
         run: |
           if [ -d "deployments/helm/rag-kb-catalog-service" ]; then
             echo "Linting Helm chart..."
-            helm lint deployments/helm/rag-kb-catalog-service
+            helm lint deployments/helm/rag-kb-catalog-service --set-literal secrets.jwtHmacSecret="ci-lint-test-mock-jwt-secret-min-32-bytes"
           fi
 
       - name: Verify ArgoCD Manifest Syntactic Validity
@@ -349,10 +358,10 @@ jobs:
         run: |
           echo "Testing Helm chart rendering with injected secrets..."
           helm template test-release deployments/helm/rag-kb-catalog-service \
-            --set secrets.jwtHmacSecret="${JWT_HMAC_SECRET}" \
-            --set secrets.postgresPassword="${POSTGRES_PASSWORD}" \
-            --set secrets.redisPassword="${REDIS_PASSWORD}" \
-            --set secrets.databaseUrl="${DATABASE_URL}" \
+            --set-literal secrets.jwtHmacSecret="${JWT_HMAC_SECRET}" \
+            --set-literal secrets.postgresPassword="${POSTGRES_PASSWORD}" \
+            --set-literal secrets.redisPassword="${REDIS_PASSWORD}" \
+            --set-literal secrets.databaseUrl="${DATABASE_URL}" \
             > rendered-manifests.yaml
 
           grep -q "kind: Secret" rendered-manifests.yaml || { echo "::error::Rendered manifests missing Secret resource"; exit 1; }
@@ -406,14 +415,14 @@ jobs:
           echo "Injecting GitHub Secrets into Kubernetes Secret manifest..."
           EXTRA_ARGS=""
           if [ -n "$DATABASE_URL" ]; then
-            EXTRA_ARGS="--set secrets.databaseUrl=$DATABASE_URL"
+            EXTRA_ARGS="--set-literal secrets.databaseUrl=$DATABASE_URL"
           fi
 
           helm template rag-kb-catalog-service deployments/helm/rag-kb-catalog-service \
             --namespace rag-system \
-            --set secrets.jwtHmacSecret="$JWT_HMAC_SECRET" \
-            --set secrets.postgresPassword="$POSTGRES_PASSWORD" \
-            --set secrets.redisPassword="$REDIS_PASSWORD" \
+            --set-literal secrets.jwtHmacSecret="$JWT_HMAC_SECRET" \
+            --set-literal secrets.postgresPassword="$POSTGRES_PASSWORD" \
+            --set-literal secrets.redisPassword="$REDIS_PASSWORD" \
             $EXTRA_ARGS \
             --show-only templates/secret.yaml > /tmp/injected-secret.yaml
 

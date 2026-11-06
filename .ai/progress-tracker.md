@@ -120,6 +120,12 @@
     - **CDC & Debezium Configuration**: Updated PostgreSQL connector configuration to use `${envVarProvider:POSTGRES_*}` and created `deployments/debezium/connect-distributed.properties` registering `EnvVarConfigProvider`.
     - **Observability & Prometheus Alerts**: Registered `pgx_pool_acquired_conns` and `pgx_pool_max_conns` Prometheus gauges backed by `pgxpool.Pool.Stat()`. Aligned Prometheus alert rule method selectors for `HighMutationConflictRate` and `P99ReadLatencyDegradation` to match exact HTTP and gRPC labels. Restricted metrics port in external Kubernetes Service.
     - **Causal Read Freshness & Benchmark Verification**: Enforced `min_version` check on database fallback in `GetKnowledgeBaseQuery` returning `ErrVersionConflict`. Verified OCC mutation throughput in benchmarks without error discarding. Confirmed Go 1.26 toolchain alignment in Dockerfile and CI workflow.
+  - **Code Review Iteration & Production Hardening**:
+    - **Dependency Readiness State Mapping**: Upgraded `httptransport.ReadinessCheckFunc` and `/ready` probe to report each dependency status individually (`connected` vs `not_configured`), avoiding false positives for unconfigured dependencies.
+    - **Config & Linter Cleanup**: Removed unused `parseEnvInt` helper and isolated `PORT` in address resolution tests.
+    - **Deployment & Helm Chart Security**: Added `secrets.manageSecret` condition and pod template secret hash annotation (`checksum/secret`). Enforced fail guard against credential-like keys in ConfigMap. Updated `P99ReadLatencyDegradation` alert description. Switched Helm injection in CI to `--set-literal`.
+    - **Secret Rotation & Runbook Reliability**: Reworked database credential rotation runbook to use a dual-role transition procedure, preventing downtime during rolling restarts. Clarified single-key JWT rotation impact.
+    - **Sync & Benchmark Robustness**: Extended URL credential detection to match empty usernames, escaped newlines in YAML generator, declared `requirements.txt`, and generated UUIDs for benchmark seeding.
 
 
 

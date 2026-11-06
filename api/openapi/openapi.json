@@ -281,7 +281,7 @@
             }
           },
           "409": {
-            "description": "Minimum version requirement not satisfied or OCC version conflict",
+            "description": "Minimum version requirement not satisfied",
             "content": {
               "application/json": {
                 "schema": {
